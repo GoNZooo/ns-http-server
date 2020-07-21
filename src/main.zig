@@ -4,6 +4,8 @@ const mem = std.mem;
 const fmt = std.fmt;
 const testing = std.testing;
 const heap = std.heap;
+const fs = std.fs;
+const Thread = std.Thread;
 
 const network = @import("network");
 
@@ -27,21 +29,93 @@ pub fn main() anyerror!void {
     const socket = try network.Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
     try socket.bind(endpoint);
     try socket.listen();
+    var memory_buffer: [1024 * 1024 * 4]u8 = undefined;
+    var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     while (running) {
+        var request_allocator = &fixed_buffer_allocator.allocator;
+        defer fixed_buffer_allocator.reset();
         const client_socket = try socket.accept();
-        // debug.print("Got client: {}!\n", .{client_socket});
+        defer client_socket.close();
+        const start_timestamp = std.time.nanoTimestamp();
+
         var buffer: [2056]u8 = undefined;
-        const received = try client_socket.receive(buffer[0..]);
-        const request = try parsing.Request.fromSlice(heap.page_allocator, buffer[0..received]);
-        debug.print(
-            "{}\t{}\n",
-            .{ request.request_line.method, request.request_line.resource[0..request.request_line.resource_length] },
-        );
-        for (request.headers.items) |header| {
-            debug.print("\t{}\n", .{header});
+        var received = client_socket.receive(buffer[0..]) catch |e| {
+            debug.print("=== receive error 1 ===\n", .{});
+            continue;
+        };
+
+        const request = try parsing.Request.fromSlice(request_allocator, buffer[0..received]);
+        if (request.request_line.method == .get) {
+            const resource_slice = request.request_line.resourceSlice()[1..];
+            const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
+            const static_path = try mem.concat(
+                request_allocator,
+                u8,
+                &[_][]const u8{ "static/", resource },
+            );
+
+            const file_data = fs.cwd().readFileAlloc(request_allocator, static_path, max_size) catch |e| {
+                switch (e) {
+                    error.FileNotFound => {
+                        _ = client_socket.send(not_found_response) catch |send_error| {
+                            debug.print("=== send error 404 ===\n", .{});
+                        };
+                        // debug.print("==== 404 ({}) ====\n", .{static_path});
+                        continue;
+                    },
+                    error.OutOfMemory => {
+                        _ = client_socket.send("HTTP/1.1 500 Internal server error\n\nOut of memory\n\n") catch |send_error| {
+                            debug.print("=== send error 500 ===\n", .{});
+                        };
+                        // debug.print("==== 500 Out of memory ({}) ====\n", .{static_path});
+                        continue;
+                    },
+                    error.EndOfStream,
+                    error.InputOutput,
+                    error.IsDir,
+                    error.OperationAborted,
+                    error.BrokenPipe,
+                    error.ConnectionResetByPeer,
+                    error.SystemResources,
+                    error.WouldBlock,
+                    error.FileTooBig,
+                    error.AccessDenied,
+                    error.ConnectionTimedOut,
+                    error.Unexpected,
+                    error.Unseekable,
+                    error.SharingViolation,
+                    error.PathAlreadyExists,
+                    error.PipeBusy,
+                    error.NameTooLong,
+                    error.InvalidUtf8,
+                    error.BadPathName,
+                    error.SymLinkLoop,
+                    error.ProcessFdQuotaExceeded,
+                    error.SystemFdQuotaExceeded,
+                    error.NoDevice,
+                    error.NoSpaceLeft,
+                    error.NotDir,
+                    error.DeviceBusy,
+                    error.FileLocksNotSupported,
+                    => {
+                        _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch |send_error| {
+                            debug.print("=== send error 500 ===\n", .{});
+                        };
+                        debug.print("==== 500 ({}) ({}) ====\n", .{ static_path, e });
+                        continue;
+                    },
+                }
+            };
+
+            const expected_file_size = file_data.len;
+            var sent = client_socket.send(file_data) catch |send_error| {
+                debug.print("=== send error 200 ===\n", .{});
+                continue;
+            };
+            while (sent < expected_file_size) : (sent += try client_socket.send(file_data[sent..])) {}
+            const end_timestamp = std.time.nanoTimestamp();
+            debug.print("=== 200 ({}), {} ns ===\n", .{ static_path, end_timestamp - start_timestamp });
         }
-        _ = try client_socket.send(html_page);
-        client_socket.close();
     }
 }
 
@@ -59,4 +133,10 @@ const html_page =
     \\    Hello there!
     \\</body>
     \\</html>
+    \\
+    \\
 ;
+
+const not_found_response = "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n";
+
+const max_size = 3_000_000_000;

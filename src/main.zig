@@ -7,6 +7,8 @@ const heap = std.heap;
 
 const network = @import("network");
 
+const parsing = @import("./parsing.zig");
+
 pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
@@ -30,6 +32,14 @@ pub fn main() anyerror!void {
         // debug.print("Got client: {}!\n", .{client_socket});
         var buffer: [2056]u8 = undefined;
         const received = try client_socket.receive(buffer[0..]);
+        const request = try parsing.Request.fromSlice(heap.page_allocator, buffer[0..received]);
+        debug.print(
+            "{}\t{}\n",
+            .{ request.request_line.method, request.request_line.resource[0..request.request_line.resource_length] },
+        );
+        for (request.headers.items) |header| {
+            debug.print("\t{}\n", .{header});
+        }
         _ = try client_socket.send(html_page);
         client_socket.close();
     }

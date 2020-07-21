@@ -13,7 +13,7 @@ pub fn build(b: *Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("zig-gnu-starter", "src/main.zig");
+    const exe = b.addExecutable("network-sandbox", "src/main.zig");
     exe.addPackagePath("network", "dependencies/zig-network/network.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);

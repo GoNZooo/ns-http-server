@@ -14,6 +14,7 @@ pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("zig-gnu-starter", "src/main.zig");
+    exe.addPackagePath("network", "dependencies/zig-network/network.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

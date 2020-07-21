@@ -28,9 +28,9 @@ pub fn main() anyerror!void {
     while (running) {
         const client_socket = try socket.accept();
         debug.print("Got client: {}!\n", .{client_socket});
-        _ = try client_socket.send("Hello!");
+        var buffer: [256]u8 = undefined;
+        const received = try client_socket.receive(buffer[0..]);
+        _ = try client_socket.send(buffer[0..received]);
         client_socket.close();
     }
-
-    std.debug.warn("All your codebase are belong to us.\n", .{});
 }

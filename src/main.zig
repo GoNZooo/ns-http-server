@@ -17,7 +17,7 @@ pub fn main() anyerror!void {
                 .value = [_]u8{ 127, 0, 0, 1 },
             },
         },
-        .port = 1337,
+        .port = 80,
     };
 
     const running = true;
@@ -27,10 +27,26 @@ pub fn main() anyerror!void {
     try socket.listen();
     while (running) {
         const client_socket = try socket.accept();
-        debug.print("Got client: {}!\n", .{client_socket});
-        var buffer: [256]u8 = undefined;
+        // debug.print("Got client: {}!\n", .{client_socket});
+        var buffer: [2056]u8 = undefined;
         const received = try client_socket.receive(buffer[0..]);
-        _ = try client_socket.send(buffer[0..received]);
+        _ = try client_socket.send(html_page);
         client_socket.close();
     }
 }
+
+const html_page =
+    \\ HTTP/1.1 200 OK
+    \\
+    \\<!DOCTYPE html>
+    \\<html lang="en">
+    \\<head>
+    \\    <meta charset="UTF-8">
+    \\    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    \\    <title>Document</title>
+    \\</head>
+    \\<body>
+    \\    Hello there!
+    \\</body>
+    \\</html>
+;

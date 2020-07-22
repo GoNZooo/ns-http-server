@@ -123,6 +123,7 @@ pub fn main() anyerror!void {
                 continue;
             };
             while (sent < expected_file_size) : (sent += try client_socket.send(file_data[sent..])) {}
+            _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
             debug.print("=== 200 ({}), {} ns ===\n", .{ static_path, end_timestamp - start_timestamp });
         }

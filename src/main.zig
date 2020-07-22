@@ -131,11 +131,14 @@ pub fn main() anyerror!void {
 }
 
 fn determineContentType(path: []const u8) []const u8 {
-    return if (mem.endsWith(u8, path, ".zig"))
-        "text/plain"
-    else if (mem.endsWith(u8, path, ".h"))
-        "text/plain"
-    else if (mem.endsWith(u8, path, ".c"))
+    return if (mem.endsWith(u8, path, ".zig") or
+        mem.endsWith(u8, path, ".txt") or
+        mem.endsWith(u8, path, ".h") or
+        mem.endsWith(u8, path, ".c") or
+        mem.endsWith(u8, path, ".md") or
+        mem.endsWith(u8, path, ".cpp") or
+        mem.endsWith(u8, path, ".cc") or
+        mem.endsWith(u8, path, ".hh"))
         "text/plain"
     else if (mem.endsWith(u8, path, ".html"))
         "text/html"

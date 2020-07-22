@@ -57,7 +57,7 @@ pub fn main() anyerror!void {
             const file_data = fs.cwd().readFileAlloc(request_allocator, static_path, max_size) catch |e| {
                 switch (e) {
                     error.FileNotFound => {
-                        _ = client_socket.send(not_found_response) catch |send_error| {
+                        _ = client_socket.send("HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n") catch |send_error| {
                             debug.print("=== send error 404 ===\n", .{});
                         };
                         debug.print("==== 404 ({}) ====\n", .{static_path});
@@ -159,7 +159,5 @@ const html_page =
     \\</body>
     \\</html>
 ;
-
-const not_found_response = "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n";
 
 const max_size = 3_000_000_000;

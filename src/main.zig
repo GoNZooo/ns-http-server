@@ -70,6 +70,7 @@ pub fn main() anyerror!void {
                         // debug.print("==== 500 Out of memory ({}) ====\n", .{static_path});
                         continue;
                     },
+
                     error.EndOfStream,
                     error.InputOutput,
                     error.IsDir,
@@ -108,6 +109,15 @@ pub fn main() anyerror!void {
             };
 
             const expected_file_size = file_data.len;
+            _ = client_socket.send("HTTP/1.1 200 OK\n") catch unreachable;
+            var content_type_buffer: [64]u8 = undefined;
+            const content_type_header = try fmt.bufPrint(
+                &content_type_buffer,
+                "Content-type: {}\n",
+                .{determineContentType(static_path)},
+            );
+            _ = client_socket.send(content_type_header) catch unreachable;
+            _ = client_socket.send("\n") catch unreachable;
             var sent = client_socket.send(file_data) catch |send_error| {
                 debug.print("=== send error 200 ===\n", .{});
                 continue;
@@ -117,6 +127,21 @@ pub fn main() anyerror!void {
             debug.print("=== 200 ({}), {} ns ===\n", .{ static_path, end_timestamp - start_timestamp });
         }
     }
+}
+
+fn determineContentType(path: []const u8) []const u8 {
+    return if (mem.endsWith(u8, path, ".zig"))
+        "text/plain"
+    else if (mem.endsWith(u8, path, ".h"))
+        "text/plain"
+    else if (mem.endsWith(u8, path, ".c"))
+        "text/plain"
+    else if (mem.endsWith(u8, path, ".html"))
+        "text/html"
+    else if (mem.endsWith(u8, path, ".json"))
+        "application/json"
+    else
+        "application/octet-stream";
 }
 
 const html_page =

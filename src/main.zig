@@ -60,14 +60,14 @@ pub fn main() anyerror!void {
                         _ = client_socket.send(not_found_response) catch |send_error| {
                             debug.print("=== send error 404 ===\n", .{});
                         };
-                        // debug.print("==== 404 ({}) ====\n", .{static_path});
+                        debug.print("==== 404 ({}) ====\n", .{static_path});
                         continue;
                     },
                     error.OutOfMemory => {
                         _ = client_socket.send("HTTP/1.1 500 Internal server error\n\nOut of memory\n\n") catch |send_error| {
                             debug.print("=== send error 500 ===\n", .{});
                         };
-                        // debug.print("==== 500 Out of memory ({}) ====\n", .{static_path});
+                        debug.print("==== 500 Out of memory ({}) ====\n", .{static_path});
                         continue;
                     },
 

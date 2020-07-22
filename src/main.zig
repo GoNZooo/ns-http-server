@@ -158,8 +158,6 @@ const html_page =
     \\    Hello there!
     \\</body>
     \\</html>
-    \\
-    \\
 ;
 
 const not_found_response = "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n";

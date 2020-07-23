@@ -125,7 +125,8 @@ pub fn main() anyerror!void {
             while (sent < expected_file_size) : (sent += try client_socket.send(file_data[sent..])) {}
             _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
-            debug.print("=== 200 ({}), {} ns ===\n", .{ static_path, end_timestamp - start_timestamp });
+            const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
+            debug.print("=== 200 ({}), {d:.3} ms ===\n", .{ static_path, timestamp_in_ms });
         }
     }
 }

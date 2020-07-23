@@ -142,6 +142,8 @@ fn determineContentType(path: []const u8) []const u8 {
         "text/plain"
     else if (mem.endsWith(u8, path, ".html") or mem.endsWith(u8, path, ".htm"))
         "text/html"
+    else if (mem.endsWith(u8, path, ".jpg") or mem.endsWith(u8, path, ".jpeg"))
+        "image/jpeg"
     else if (mem.endsWith(u8, path, ".json"))
         "application/json"
     else

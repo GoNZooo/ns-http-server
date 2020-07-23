@@ -54,20 +54,22 @@ pub fn main() anyerror!void {
                 &[_][]const u8{ "static/", resource },
             );
 
+            debug.print("==> {} {}\n", .{ request.request_line.method, static_path });
+
             const file_data = fs.cwd().readFileAlloc(request_allocator, static_path, max_size) catch |e| {
                 switch (e) {
                     error.FileNotFound => {
                         _ = client_socket.send("HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n") catch |send_error| {
                             debug.print("=== send error 404 ===\n", .{});
                         };
-                        debug.print("==== 404 ({}) ====\n", .{static_path});
+                        debug.print("<== 404 ({})\n", .{static_path});
                         continue;
                     },
                     error.OutOfMemory => {
                         _ = client_socket.send("HTTP/1.1 500 Internal server error\n\nOut of memory\n\n") catch |send_error| {
                             debug.print("=== send error 500 ===\n", .{});
                         };
-                        debug.print("==== 500 Out of memory ({}) ====\n", .{static_path});
+                        debug.print("<== 500 Out of memory ({})\n", .{static_path});
                         continue;
                     },
 
@@ -102,7 +104,7 @@ pub fn main() anyerror!void {
                         _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch |send_error| {
                             debug.print("=== send error 500 ===\n", .{});
                         };
-                        debug.print("==== 500 ({}) ({}) ====\n", .{ static_path, e });
+                        debug.print("<== 500 ({}) ({})\n", .{ static_path, e });
                         continue;
                     },
                 }
@@ -126,7 +128,7 @@ pub fn main() anyerror!void {
             _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
-            debug.print("=== 200 ({}), {d:.3} ms ===\n", .{ static_path, timestamp_in_ms });
+            debug.print("<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
         }
     }
 }

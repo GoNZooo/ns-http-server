@@ -1,10 +1,10 @@
 const std = @import("std");
-const debug = std.debug;
 const mem = std.mem;
 const fmt = std.fmt;
 const testing = std.testing;
 const heap = std.heap;
 const fs = std.fs;
+const log = std.log;
 const Thread = std.Thread;
 
 const network = @import("network");
@@ -43,7 +43,7 @@ pub fn main() anyerror!void {
 
         var buffer: [2056]u8 = undefined;
         var received = client_socket.receive(buffer[0..]) catch |e| {
-            debug.print("=== receive error 1 ===\n", .{});
+            log.err(.receive, "=== receive error 1 ===\n", .{});
             continue;
         };
 
@@ -57,7 +57,7 @@ pub fn main() anyerror!void {
                 &[_][]const u8{ "static/", resource },
             );
 
-            debug.print("==> {} {}\n", .{ request.request_line.method.toSlice(), static_path });
+            log.info(.request, "==> {} {}\n", .{ request.request_line.method.toSlice(), static_path });
 
             const file_data = fs.cwd().readFileAlloc(
                 request_stack_allocator,
@@ -69,9 +69,9 @@ pub fn main() anyerror!void {
                         _ = client_socket.send(
                             "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n",
                         ) catch |send_error| {
-                            debug.print("=== send error 404 ===\n", .{});
+                            log.err(.send, "=== send error 404 ===\n", .{});
                         };
-                        debug.print("<== 404 ({})\n", .{static_path});
+                        log.err(.file, "<== 404 ({})\n", .{static_path});
                         continue;
                     },
                     error.OutOfMemory => {
@@ -80,7 +80,8 @@ pub fn main() anyerror!void {
                             static_path,
                             max_heap_file_read_size,
                         );
-                        debug.print(
+                        log.info(
+                            .allocation,
                             "|== File too big for stack, allocating on heap ({})\n",
                             .{static_path},
                         );
@@ -118,9 +119,9 @@ pub fn main() anyerror!void {
                     => {
                         _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch
                             |send_error| {
-                            debug.print("=== send error 500 ===\n", .{});
+                            log.err(.send, "=== send error 500 ===\n", .{});
                         };
-                        debug.print("<== 500 ({}) ({})\n", .{ static_path, e });
+                        log.err(.unexpected, "<== 500 ({}) ({})\n", .{ static_path, e });
                         continue;
                     },
                 }
@@ -137,7 +138,7 @@ pub fn main() anyerror!void {
             _ = client_socket.send(content_type_header) catch unreachable;
             _ = client_socket.send("\n") catch unreachable;
             var sent = client_socket.send(file_data) catch |send_error| {
-                debug.print("=== send error 200 ===\n", .{});
+                log.err(.send, "=== send error 200 ===\n", .{});
                 continue;
             };
             while (sent < expected_file_size) : ({
@@ -147,7 +148,7 @@ pub fn main() anyerror!void {
             _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
-            debug.print("<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
+            log.info(.request, "<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
         }
     }
 }

@@ -66,7 +66,9 @@ pub fn main() anyerror!void {
             ) catch |e| err: {
                 switch (e) {
                     error.FileNotFound => {
-                        _ = client_socket.send("HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n") catch |send_error| {
+                        _ = client_socket.send(
+                            "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n",
+                        ) catch |send_error| {
                             debug.print("=== send error 404 ===\n", .{});
                         };
                         debug.print("<== 404 ({})\n", .{static_path});
@@ -78,7 +80,10 @@ pub fn main() anyerror!void {
                             static_path,
                             max_heap_file_read_size,
                         );
-                        debug.print("<== 500 Out of memory ({})\n", .{static_path});
+                        debug.print(
+                            "|== Out of memory on stack allocator, falling back to heap ({})\n",
+                            .{static_path},
+                        );
 
                         break :err file_data;
                     },
@@ -111,7 +116,8 @@ pub fn main() anyerror!void {
                     error.DeviceBusy,
                     error.FileLocksNotSupported,
                     => {
-                        _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch |send_error| {
+                        _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch
+                            |send_error| {
                             debug.print("=== send error 500 ===\n", .{});
                         };
                         debug.print("<== 500 ({}) ({})\n", .{ static_path, e });
@@ -134,7 +140,10 @@ pub fn main() anyerror!void {
                 debug.print("=== send error 200 ===\n", .{});
                 continue;
             };
-            while (sent < expected_file_size) : (sent += try client_socket.send(file_data[sent..])) {}
+            while (sent < expected_file_size) : ({
+                // @TODO: add proper error handling here, like other cases
+                sent += try client_socket.send(file_data[sent..]);
+            }) {}
             _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
@@ -144,7 +153,11 @@ pub fn main() anyerror!void {
 }
 
 fn determineContentType(path: []const u8) []const u8 {
-    return if (endsWithAny(u8, path, &[_][]const u8{ ".zig", ".txt", ".h", ".c", ".md", ".cpp", ".cc", ".hh" }))
+    return if (endsWithAny(
+        u8,
+        path,
+        &[_][]const u8{ ".zig", ".txt", ".h", ".c", ".md", ".cpp", ".cc", ".hh" },
+    ))
         "text/plain"
     else if (mem.endsWith(u8, path, ".html") or mem.endsWith(u8, path, ".htm"))
         "text/html"

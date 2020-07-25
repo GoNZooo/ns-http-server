@@ -57,7 +57,7 @@ pub fn main() anyerror!void {
                 &[_][]const u8{ "static/", resource },
             );
 
-            debug.print("==> {} {}\n", .{ request.request_line.method, static_path });
+            debug.print("==> {} {}\n", .{ request.request_line.method.toSlice(), static_path });
 
             const file_data = fs.cwd().readFileAlloc(
                 request_stack_allocator,

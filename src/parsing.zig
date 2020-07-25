@@ -421,6 +421,20 @@ pub const Method = enum(u8) {
 
         return error.UnableToParseMethod;
     }
+
+    pub fn toSlice(self: Method) []const u8 {
+        return switch (self) {
+            .get => "GET",
+            .head => "HEAD",
+            .put => "PUT",
+            .post => "POST",
+            .delete => "DELETE",
+            .patch => "PATCH",
+            .options => "OPTIONS",
+            .connect => "CONNECT",
+            .trace => "TRACE",
+        };
+    }
 };
 
 pub const Version = enum(u8) {

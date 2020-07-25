@@ -18,7 +18,7 @@ pub fn main() anyerror!void {
     const endpoint = network.EndPoint{
         .address = network.Address{
             .ipv4 = .{
-                .value = [_]u8{ 127, 0, 0, 1 },
+                .value = [_]u8{ 0, 0, 0, 0 },
             },
         },
         .port = 80,

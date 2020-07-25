@@ -144,14 +144,7 @@ pub fn main() anyerror!void {
 }
 
 fn determineContentType(path: []const u8) []const u8 {
-    return if (mem.endsWith(u8, path, ".zig") or
-        mem.endsWith(u8, path, ".txt") or
-        mem.endsWith(u8, path, ".h") or
-        mem.endsWith(u8, path, ".c") or
-        mem.endsWith(u8, path, ".md") or
-        mem.endsWith(u8, path, ".cpp") or
-        mem.endsWith(u8, path, ".cc") or
-        mem.endsWith(u8, path, ".hh"))
+    return if (endsWithAny(u8, path, &[_][]const u8{ ".zig", ".txt", ".h", ".c", ".md", ".cpp", ".cc", ".hh" }))
         "text/plain"
     else if (mem.endsWith(u8, path, ".html") or mem.endsWith(u8, path, ".htm"))
         "text/html"
@@ -163,6 +156,14 @@ fn determineContentType(path: []const u8) []const u8 {
         "application/json"
     else
         "application/octet-stream";
+}
+
+fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []const T) bool {
+    inline for (suffixes) |suffix| {
+        if (mem.endsWith(T, slice, suffix)) return true;
+    }
+
+    return false;
 }
 
 const html_page =

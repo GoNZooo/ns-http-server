@@ -34,6 +34,9 @@ pub fn main() anyerror!void {
     while (running) {
         var request_stack_allocator = &fixed_buffer_allocator.allocator;
         defer fixed_buffer_allocator.reset();
+        var backup_arena = heap.ArenaAllocator.init(heap.page_allocator);
+        defer backup_arena.deinit();
+        var backup_allocator = &backup_arena.allocator;
         const client_socket = try socket.accept();
         defer client_socket.close();
         const start_timestamp = std.time.nanoTimestamp();
@@ -60,7 +63,7 @@ pub fn main() anyerror!void {
                 request_stack_allocator,
                 static_path,
                 max_stack_file_read_size,
-            ) catch |e| {
+            ) catch |e| err: {
                 switch (e) {
                     error.FileNotFound => {
                         _ = client_socket.send("HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n") catch |send_error| {
@@ -70,11 +73,14 @@ pub fn main() anyerror!void {
                         continue;
                     },
                     error.OutOfMemory => {
-                        _ = client_socket.send("HTTP/1.1 500 Internal server error\n\nOut of memory\n\n") catch |send_error| {
-                            debug.print("=== send error 500 ===\n", .{});
-                        };
+                        var file_data = try fs.cwd().readFileAlloc(
+                            backup_allocator,
+                            static_path,
+                            max_heap_file_read_size,
+                        );
                         debug.print("<== 500 Out of memory ({})\n", .{static_path});
-                        continue;
+
+                        break :err file_data;
                     },
 
                     error.EndOfStream,
@@ -176,4 +182,4 @@ const html_page =
 ;
 
 const max_stack_file_read_size = 3_000_000_000;
-const max_heap_file_read_Size = 300_000_000_000;
+const max_heap_file_read_size = 1_000_000_000_000;

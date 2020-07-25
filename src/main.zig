@@ -32,7 +32,7 @@ pub fn main() anyerror!void {
     var memory_buffer: [1024 * 1024 * 4]u8 = undefined;
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     while (running) {
-        var request_allocator = &fixed_buffer_allocator.allocator;
+        var request_stack_allocator = &fixed_buffer_allocator.allocator;
         defer fixed_buffer_allocator.reset();
         const client_socket = try socket.accept();
         defer client_socket.close();
@@ -44,19 +44,23 @@ pub fn main() anyerror!void {
             continue;
         };
 
-        const request = try parsing.Request.fromSlice(request_allocator, buffer[0..received]);
+        const request = try parsing.Request.fromSlice(request_stack_allocator, buffer[0..received]);
         if (request.request_line.method == .get) {
             const resource_slice = request.request_line.resourceSlice()[1..];
             const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
             const static_path = try mem.concat(
-                request_allocator,
+                request_stack_allocator,
                 u8,
                 &[_][]const u8{ "static/", resource },
             );
 
             debug.print("==> {} {}\n", .{ request.request_line.method, static_path });
 
-            const file_data = fs.cwd().readFileAlloc(request_allocator, static_path, max_size) catch |e| {
+            const file_data = fs.cwd().readFileAlloc(
+                request_stack_allocator,
+                static_path,
+                max_stack_file_read_size,
+            ) catch |e| {
                 switch (e) {
                     error.FileNotFound => {
                         _ = client_socket.send("HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n") catch |send_error| {
@@ -171,4 +175,5 @@ const html_page =
     \\</html>
 ;
 
-const max_size = 3_000_000_000;
+const max_stack_file_read_size = 3_000_000_000;
+const max_heap_file_read_Size = 300_000_000_000;

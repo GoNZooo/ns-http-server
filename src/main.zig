@@ -81,7 +81,7 @@ pub fn main() anyerror!void {
                             max_heap_file_read_size,
                         );
                         debug.print(
-                            "|== Out of memory on stack allocator, falling back to heap ({})\n",
+                            "|== File too big for stack, allocating on heap ({})\n",
                             .{static_path},
                         );
 

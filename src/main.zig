@@ -13,6 +13,8 @@ const network = @import("network");
 
 const parsing = @import("./parsing.zig");
 
+pub const log_level = .info;
+
 const Options = struct {
     const Self = @This();
 

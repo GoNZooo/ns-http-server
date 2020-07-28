@@ -72,7 +72,7 @@ pub fn main() anyerror!void {
         defer client_socket.close();
         const start_timestamp = std.time.nanoTimestamp();
 
-        var buffer: [2056]u8 = undefined;
+        var buffer = try request_stack_allocator.alloc(u8, 2056);
         var received = client_socket.receive(buffer[0..]) catch |e| {
             log.err(.receive, "=== receive error 1 ===\n", .{});
             continue;
@@ -135,16 +135,16 @@ pub fn main() anyerror!void {
 
             const expected_file_size = try file_descriptor.getEndPos();
             _ = client_socket.send("HTTP/1.1 200 OK\n") catch unreachable;
-            var content_type_buffer: [64]u8 = undefined;
+            var content_type_buffer = try request_stack_allocator.alloc(u8, 128);
             const content_type_header = try fmt.bufPrint(
-                &content_type_buffer,
+                content_type_buffer,
                 "Content-type: {}\n",
                 .{determineContentType(static_path)},
             );
             _ = client_socket.send(content_type_header) catch unreachable;
             _ = client_socket.send("\n") catch unreachable;
 
-            var file_buffer = try request_stack_allocator.alloc(u8, max_stack_file_read_size - 500_000);
+            var file_buffer = try request_stack_allocator.alloc(u8, max_stack_file_read_size - 100_000);
             var read_bytes = try file_descriptor.read(file_buffer);
             while (read_bytes == file_buffer.len) : (read_bytes = try file_descriptor.read(file_buffer)) {
                 _ = try client_socket.send(file_buffer);

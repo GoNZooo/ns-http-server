@@ -5,13 +5,41 @@ const testing = std.testing;
 const heap = std.heap;
 const fs = std.fs;
 const log = std.log;
+const process = std.process;
+const debug = std.debug;
 const Thread = std.Thread;
 
 const network = @import("network");
 
 const parsing = @import("./parsing.zig");
 
+const Options = struct {
+    const Self = @This();
+
+    maximum_request_memory: ?usize = null,
+
+    pub fn fromArguments(arguments: []const []const u8) !Self {
+        var options = Self{};
+
+        var i: usize = 0;
+        while (i < arguments.len) : (i += 1) {
+            const argument = arguments[i];
+            if (mem.eql(u8, argument, "--max-memory")) {
+                const maximum_memory = try fmt.parseInt(usize, arguments[i + 1], 10);
+                options.maximum_request_memory = maximum_memory;
+                i += 1;
+            }
+        }
+
+        return options;
+    }
+};
+
 pub fn main() anyerror!void {
+    const arguments = try process.argsAlloc(heap.page_allocator);
+    defer heap.page_allocator.free(arguments);
+    const options = Options.fromArguments(arguments);
+
     try network.init();
     defer network.deinit();
 

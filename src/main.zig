@@ -108,6 +108,7 @@ fn handleRequest(client_socket: network.Socket) !void {
                         log.err(.send, "=== send error 404 ===\n", .{});
                     };
                     log.err(.file, "<== 404 ({})\n", .{static_path});
+                    client_socket.close();
 
                     return;
                 },

@@ -63,14 +63,11 @@ pub fn main() anyerror!void {
     const socket = try network.Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
     try socket.bind(endpoint);
     try socket.listen();
-    var memory_buffer: [1024 * 1024 * 4]u8 = undefined;
+    var memory_buffer: [max_stack_file_read_size]u8 = undefined;
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     while (running) {
         var request_stack_allocator = &fixed_buffer_allocator.allocator;
         defer fixed_buffer_allocator.reset();
-        var backup_arena = heap.ArenaAllocator.init(heap.page_allocator);
-        defer backup_arena.deinit();
-        var backup_allocator = &backup_arena.allocator;
         const client_socket = try socket.accept();
         defer client_socket.close();
         const start_timestamp = std.time.nanoTimestamp();
@@ -93,11 +90,7 @@ pub fn main() anyerror!void {
 
             log.info(.request, "==> {} {}\n", .{ request.request_line.method.toSlice(), static_path });
 
-            const file_data = fs.cwd().readFileAlloc(
-                request_stack_allocator,
-                static_path,
-                max_stack_file_read_size,
-            ) catch |e| err: {
+            const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
                 switch (e) {
                     error.FileNotFound => {
                         _ = client_socket.send(
@@ -108,34 +101,13 @@ pub fn main() anyerror!void {
                         log.err(.file, "<== 404 ({})\n", .{static_path});
                         continue;
                     },
-                    error.OutOfMemory => {
-                        var file_data = try fs.cwd().readFileAlloc(
-                            backup_allocator,
-                            static_path,
-                            maximum_request_heap_size,
-                        );
-                        log.info(
-                            .allocation,
-                            "|== File too big for stack, allocating on heap ({})\n",
-                            .{static_path},
-                        );
 
-                        break :err file_data;
-                    },
-
-                    error.EndOfStream,
-                    error.InputOutput,
                     error.IsDir,
-                    error.OperationAborted,
-                    error.BrokenPipe,
-                    error.ConnectionResetByPeer,
                     error.SystemResources,
                     error.WouldBlock,
                     error.FileTooBig,
                     error.AccessDenied,
-                    error.ConnectionTimedOut,
                     error.Unexpected,
-                    error.Unseekable,
                     error.SharingViolation,
                     error.PathAlreadyExists,
                     error.PipeBusy,
@@ -161,7 +133,7 @@ pub fn main() anyerror!void {
                 }
             };
 
-            const expected_file_size = file_data.len;
+            const expected_file_size = try file_descriptor.getEndPos();
             _ = client_socket.send("HTTP/1.1 200 OK\n") catch unreachable;
             var content_type_buffer: [64]u8 = undefined;
             const content_type_header = try fmt.bufPrint(
@@ -171,14 +143,14 @@ pub fn main() anyerror!void {
             );
             _ = client_socket.send(content_type_header) catch unreachable;
             _ = client_socket.send("\n") catch unreachable;
-            var sent = client_socket.send(file_data) catch |send_error| {
-                log.err(.send, "=== send error 200 ===\n", .{});
-                continue;
-            };
-            while (sent < expected_file_size) : ({
-                // @TODO: add proper error handling here, like other cases
-                sent += try client_socket.send(file_data[sent..]);
-            }) {}
+
+            var file_buffer = try request_stack_allocator.alloc(u8, max_stack_file_read_size - 500_000);
+            var read_bytes = try file_descriptor.read(file_buffer);
+            while (read_bytes == file_buffer.len) : (read_bytes = try file_descriptor.read(file_buffer)) {
+                _ = try client_socket.send(file_buffer);
+            }
+            _ = try client_socket.send(file_buffer[0..read_bytes]);
+
             _ = client_socket.send("\n\n") catch unreachable;
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
@@ -230,5 +202,5 @@ const html_page =
     \\</html>
 ;
 
-const max_stack_file_read_size = 3_000_000_000;
+const max_stack_file_read_size = 4_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;

@@ -221,22 +221,6 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
     return false;
 }
 
-const html_page =
-    \\ HTTP/1.1 200 OK
-    \\
-    \\<!DOCTYPE html>
-    \\<html lang="en">
-    \\<head>
-    \\    <meta charset="UTF-8">
-    \\    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    \\    <title>Document</title>
-    \\</head>
-    \\<body>
-    \\    Hello there!
-    \\</body>
-    \\</html>
-;
-
 const max_stack_file_read_size = 4_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;
 

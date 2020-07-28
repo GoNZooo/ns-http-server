@@ -33,8 +33,45 @@ pub fn main() anyerror!void {
     try socket.listen();
 
     while (true) {
-        const client_socket = try socket.accept();
-        _ = try Thread.spawn(client_socket, handleRequest);
+        const client_socket = socket.accept() catch |e| {
+            switch (e) {
+                error.ConnectionAborted => {
+                    log.err(.accept, "Client aborted connection\n", .{});
+
+                    continue;
+                },
+
+                error.ProcessFdQuotaExceeded,
+                error.SystemFdQuotaExceeded,
+                error.SystemResources,
+                error.UnsupportedAddressFamily,
+                error.ProtocolFailure,
+                error.BlockedByFirewall,
+                error.WouldBlock,
+                error.PermissionDenied,
+                error.Unexpected,
+                => {
+                    continue;
+                },
+            }
+        };
+        _ = Thread.spawn(client_socket, handleRequest) catch |e| {
+            switch (e) {
+                error.OutOfMemory,
+                error.ThreadQuotaExceeded,
+                error.SystemResources,
+                error.LockedMemoryLimitExceeded,
+                => {
+                    _ = try client_socket.send("503 Busy\n\nLoad too high\n\n");
+                },
+                error.Unexpected => {
+                    log.err(.spawn, "Unexpected error when trying to create thread.\n", .{});
+                    _ = try client_socket.send(
+                        "500 Internal Server Error\n\nInternal Server Error\n\n",
+                    );
+                },
+            }
+        };
     }
 }
 

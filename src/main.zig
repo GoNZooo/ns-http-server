@@ -69,7 +69,7 @@ pub fn main() anyerror!void {
         var request_stack_allocator = &fixed_buffer_allocator.allocator;
         defer fixed_buffer_allocator.reset();
         const client_socket = try socket.accept();
-        defer client_socket.close();
+        var client_socket_open = true;
         const start_timestamp = std.time.nanoTimestamp();
 
         var buffer = try request_stack_allocator.alloc(u8, 2056);
@@ -147,14 +147,39 @@ pub fn main() anyerror!void {
             var file_buffer = try request_stack_allocator.alloc(u8, max_stack_file_read_size - 100_000);
             var read_bytes = try file_descriptor.read(file_buffer);
             while (read_bytes == file_buffer.len) : (read_bytes = try file_descriptor.read(file_buffer)) {
-                _ = try client_socket.send(file_buffer);
+                _ = client_socket.send(file_buffer) catch |e| {
+                    switch (e) {
+                        error.ConnectionResetByPeer, error.BrokenPipe => {
+                            log.err(
+                                .send,
+                                "Broken pipe / ConnectionResetByPeer sending to {}\n",
+                                .{try (client_socket.getRemoteEndPoint())},
+                            );
+                        },
+                        error.AccessDenied,
+                        error.WouldBlock,
+                        error.FastOpenAlreadyInProgress,
+                        error.MessageTooBig,
+                        error.SystemResources,
+                        error.Unexpected,
+                        => {
+                            debug.panic("odd error: {}\n", .{e});
+                        },
+                    }
+                    client_socket.close();
+                    client_socket_open = false;
+                    break;
+                };
             }
-            _ = try client_socket.send(file_buffer[0..read_bytes]);
+            if (client_socket_open) {
+                _ = client_socket.send(file_buffer[0..read_bytes]) catch |e| {};
+                _ = client_socket.send("\n\n") catch unreachable;
+                client_socket.close();
 
-            _ = client_socket.send("\n\n") catch unreachable;
-            const end_timestamp = std.time.nanoTimestamp();
-            const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
-            log.info(.request, "<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
+                const end_timestamp = std.time.nanoTimestamp();
+                const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
+                log.info(.request, "<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
+            }
         }
     }
 }

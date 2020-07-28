@@ -96,6 +96,7 @@ pub const Header = union(enum) {
     referer: []const u8,
     upgrade_insecure_requests: u32,
     user_agent: []const u8,
+    if_none_match: []const u8,
     // I want to have something better here, ideally a slice of slices but I can't very well
     // construct an array and return a slice to it in the parsing as it'll go out of scope.
     // I need to come up with something neat here.
@@ -139,6 +140,10 @@ pub const Header = union(enum) {
                 const etag = try ETag.fromSlice(header_value);
 
                 return Header{ .etag = etag };
+            } else if (mem.eql(u8, header_name, "if-none-match")) {
+                const if_none_match = header_value;
+
+                return Header{ .if_none_match = if_none_match };
             } else if (mem.eql(u8, header_name, "referer")) {
                 const referer = header_value;
 

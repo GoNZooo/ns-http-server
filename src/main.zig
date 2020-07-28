@@ -145,11 +145,44 @@ fn handleRequest(client_socket: network.Socket) !void {
             }
         };
 
-        const expected_file_size = try file_descriptor.getEndPos();
+        const stat = try file_descriptor.stat();
+        const last_modification_time = stat.mtime;
+        const expected_file_size = stat.size;
+
+        const hash_function = std.hash_map.getAutoHashFn(@TypeOf(last_modification_time));
+        const etag_hash = hash_function(last_modification_time);
+        var if_none_match_request_header: ?parsing.Header = null;
+        for (request.headers.items) |h| {
+            switch (h) {
+                .if_none_match => |d| if_none_match_request_header = h,
+                else => {},
+            }
+        }
+        if (if_none_match_request_header) |h| {
+            const etag_value = fmt.parseInt(u32, h.if_none_match, 10) catch |e| etag_value: {
+                log.err(.etag, "|== Unable to hash incoming etag value: {}\n", .{h.if_none_match});
+
+                break :etag_value 0;
+            };
+            if (etag_value == etag_hash) {
+                log.info(.response, "<== 304 ({})\n", .{static_path});
+                _ = try client_socket.send(not_modified_response);
+                client_socket.close();
+
+                return;
+            }
+        }
+
         _ = client_socket.send("HTTP/1.1 200 OK\n") catch unreachable;
-        var content_type_buffer = try request_stack_allocator.alloc(u8, 128);
+        var header_buffer = try request_stack_allocator.alloc(u8, 128);
+        const etag_header = try fmt.bufPrint(
+            header_buffer,
+            "ETag: {}\n",
+            .{etag_hash},
+        );
+        _ = client_socket.send(etag_header) catch unreachable;
         const content_type_header = try fmt.bufPrint(
-            content_type_buffer,
+            header_buffer,
             "Content-type: {}\n",
             .{determineContentType(static_path)},
         );
@@ -230,6 +263,11 @@ const not_found_response =
     \\Content-length: 14
     \\
     \\File not found
+;
+
+const not_modified_response =
+    \\HTTP/1.1 304 Not modified
+    \\
 ;
 
 const high_load_response =

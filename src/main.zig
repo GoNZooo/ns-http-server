@@ -62,13 +62,11 @@ pub fn main() anyerror!void {
                 error.SystemResources,
                 error.LockedMemoryLimitExceeded,
                 => {
-                    _ = try client_socket.send("503 Busy\n\nLoad too high\n\n");
+                    _ = try client_socket.send(high_load_response);
                 },
                 error.Unexpected => {
                     log.err(.spawn, "Unexpected error when trying to create thread.\n", .{});
-                    _ = try client_socket.send(
-                        "500 Internal Server Error\n\nInternal Server Error\n\n",
-                    );
+                    _ = try client_socket.send(internal_error_response);
                 },
             }
         };
@@ -106,9 +104,7 @@ fn handleRequest(client_socket: network.Socket) !void {
         const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
             switch (e) {
                 error.FileNotFound => {
-                    _ = client_socket.send(
-                        "HTTP/1.1 404 NOT FOUND\n\nFile cannot be found\n\n",
-                    ) catch |send_error| {
+                    _ = client_socket.send(not_found_response) catch |send_error| {
                         log.err(.send, "=== send error 404 ===\n", .{});
                     };
                     log.err(.file, "<== 404 ({})\n", .{static_path});
@@ -137,7 +133,7 @@ fn handleRequest(client_socket: network.Socket) !void {
                 error.DeviceBusy,
                 error.FileLocksNotSupported,
                 => {
-                    _ = client_socket.send("HTTP/1.1 500 Internal server error\n\n") catch
+                    _ = client_socket.send(internal_error_response) catch
                         |send_error| {
                         log.err(.send, "=== send error 500 ===\n", .{});
                     };
@@ -243,3 +239,24 @@ const html_page =
 
 const max_stack_file_read_size = 4_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;
+
+const not_found_response =
+    \\HTTP/1.1 404 Not found
+    \\Content-length: 14
+    \\
+    \\File not found
+;
+
+const high_load_response =
+    \\HTTP/1.1 503 Busy
+    \\Content-length: 13
+    \\
+    \\Load too high
+;
+
+const internal_error_response =
+    \\500 Internal Server Error
+    \\Content-length: 21
+    \\
+    \\Internal Server Error
+;

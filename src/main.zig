@@ -40,7 +40,11 @@ const Options = struct {
 pub fn main() anyerror!void {
     const arguments = try process.argsAlloc(heap.page_allocator);
     defer heap.page_allocator.free(arguments);
-    const options = Options.fromArguments(arguments);
+    const options = try Options.fromArguments(arguments);
+    const maximum_request_heap_size = if (options.maximum_request_memory) |size|
+        size
+    else
+        max_heap_file_read_size;
 
     try network.init();
     defer network.deinit();
@@ -108,7 +112,7 @@ pub fn main() anyerror!void {
                         var file_data = try fs.cwd().readFileAlloc(
                             backup_allocator,
                             static_path,
-                            max_heap_file_read_size,
+                            maximum_request_heap_size,
                         );
                         log.info(
                             .allocation,

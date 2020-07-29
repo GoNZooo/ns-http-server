@@ -103,7 +103,11 @@ fn handleRequest(client_socket: network.Socket) !void {
             &[_][]const u8{ "static/", resource },
         );
 
-        log.info(.request, "==> {} {}\n", .{ request.request_line.method.toSlice(), static_path });
+        log.info(.request, "{} ==> {} {}\n", .{
+            (try client_socket.getRemoteEndPoint()),
+            request.request_line.method.toSlice(),
+            static_path,
+        });
 
         const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
             switch (e) {

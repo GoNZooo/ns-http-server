@@ -86,7 +86,28 @@ fn handleRequest(client_socket: network.Socket) !void {
     var client_socket_open = true;
     const start_timestamp = std.time.nanoTimestamp();
 
-    const client_endpoint = client_socket.getRemoteEndPoint() catch |e| {
+    const local_endpoint = client_socket.getLocalEndPoint() catch |e| {
+        switch (e) {
+            error.UnsupportedAddressFamily => {
+                log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
+
+                client_socket.close();
+                return;
+            },
+            error.InsufficientBytes, error.SystemResources, error.Unexpected => {
+                log.err(
+                    .endpoint,
+                    "|== Unexpected error for client endpoint discovery: {}\n",
+                    .{e},
+                );
+
+                client_socket.close();
+                return;
+            },
+        }
+    };
+
+    const remote_endpoint = client_socket.getRemoteEndPoint() catch |e| {
         switch (e) {
             error.NotConnected => {
                 log.err(.endpoint, "|== Client disconnected before endpoint discovery\n", .{});
@@ -133,7 +154,7 @@ fn handleRequest(client_socket: network.Socket) !void {
         log.info(
             .request,
             "{} ==> {} {}\n",
-            .{ client_endpoint, request.request_line.method.toSlice(), static_path },
+            .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
         );
 
         const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
@@ -144,8 +165,8 @@ fn handleRequest(client_socket: network.Socket) !void {
                     };
                     log.err(
                         .file,
-                        "{} <== 404 ({})\n",
-                        .{ client_endpoint, static_path },
+                        "{} <== {} 404 ({})\n",
+                        .{ remote_endpoint, local_endpoint, static_path },
                     );
                     client_socket.close();
 
@@ -179,8 +200,8 @@ fn handleRequest(client_socket: network.Socket) !void {
                     };
                     log.err(
                         .unexpected,
-                        "{} <== 500 ({}) ({})\n",
-                        .{ client_endpoint, static_path, e },
+                        "{} <== {} 500 ({}) ({})\n",
+                        .{ remote_endpoint, local_endpoint, static_path, e },
                     );
 
                     return;
@@ -208,7 +229,11 @@ fn handleRequest(client_socket: network.Socket) !void {
                 break :etag_value 0;
             };
             if (etag_value == etag_hash) {
-                log.info(.response, "{} <== 304 ({})\n", .{ client_endpoint, static_path });
+                log.info(
+                    .response,
+                    "{} <== {} 304 ({})\n",
+                    .{ remote_endpoint, local_endpoint, static_path },
+                );
                 _ = try client_socket.send(not_modified_response);
                 client_socket.close();
 
@@ -267,8 +292,8 @@ fn handleRequest(client_socket: network.Socket) !void {
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
             log.info(
                 .request,
-                "{} <== 200 ({}), {d:.3} ms\n",
-                .{ client_endpoint, static_path, timestamp_in_ms },
+                "{} <== {} 200 ({}), {d:.3} ms\n",
+                .{ remote_endpoint, local_endpoint, static_path, timestamp_in_ms },
             );
             client_socket.close();
         }

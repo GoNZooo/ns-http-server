@@ -86,6 +86,33 @@ fn handleRequest(client_socket: network.Socket) !void {
     var client_socket_open = true;
     const start_timestamp = std.time.nanoTimestamp();
 
+    const client_endpoint = client_socket.getRemoteEndPoint() catch |e| {
+        switch (e) {
+            error.NotConnected => {
+                log.err(.endpoint, "|== Client disconnected before endpoint discovery\n", .{});
+
+                client_socket.close();
+                return;
+            },
+            error.UnsupportedAddressFamily => {
+                log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
+
+                client_socket.close();
+                return;
+            },
+            error.InsufficientBytes, error.SystemResources, error.Unexpected => {
+                log.err(
+                    .endpoint,
+                    "|== Unexpected error for client endpoint discovery: {}\n",
+                    .{e},
+                );
+
+                client_socket.close();
+                return;
+            },
+        }
+    };
+
     var buffer = try request_stack_allocator.alloc(u8, 2056);
     var received = client_socket.receive(buffer[0..]) catch |e| {
         log.err(.receive, "=== receive error 1 ===\n", .{});
@@ -103,11 +130,11 @@ fn handleRequest(client_socket: network.Socket) !void {
             &[_][]const u8{ "static/", resource },
         );
 
-        log.info(.request, "{} ==> {} {}\n", .{
-            (try client_socket.getRemoteEndPoint()),
-            request.request_line.method.toSlice(),
-            static_path,
-        });
+        log.info(
+            .request,
+            "{} ==> {} {}\n",
+            .{ client_endpoint, request.request_line.method.toSlice(), static_path },
+        );
 
         const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
             switch (e) {
@@ -115,7 +142,11 @@ fn handleRequest(client_socket: network.Socket) !void {
                     _ = client_socket.send(not_found_response) catch |send_error| {
                         log.err(.send, "=== send error 404 ===\n", .{});
                     };
-                    log.err(.file, "<== 404 ({})\n", .{static_path});
+                    log.err(
+                        .file,
+                        "{} <== 404 ({})\n",
+                        .{ client_endpoint, static_path },
+                    );
                     client_socket.close();
 
                     return;
@@ -146,7 +177,11 @@ fn handleRequest(client_socket: network.Socket) !void {
                         |send_error| {
                         log.err(.send, "=== send error 500 ===\n", .{});
                     };
-                    log.err(.unexpected, "<== 500 ({}) ({})\n", .{ static_path, e });
+                    log.err(
+                        .unexpected,
+                        "{} <== 500 ({}) ({})\n",
+                        .{ client_endpoint, static_path, e },
+                    );
 
                     return;
                 },
@@ -173,7 +208,7 @@ fn handleRequest(client_socket: network.Socket) !void {
                 break :etag_value 0;
             };
             if (etag_value == etag_hash) {
-                log.info(.response, "<== 304 ({})\n", .{static_path});
+                log.info(.response, "{} <== 304 ({})\n", .{ client_endpoint, static_path });
                 _ = try client_socket.send(not_modified_response);
                 client_socket.close();
 
@@ -227,11 +262,15 @@ fn handleRequest(client_socket: network.Socket) !void {
         if (client_socket_open) {
             _ = client_socket.send(file_buffer[0..read_bytes]) catch |e| {};
             _ = client_socket.send("\n\n") catch unreachable;
-            client_socket.close();
 
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
-            log.info(.request, "<== 200 ({}), {d:.3} ms\n", .{ static_path, timestamp_in_ms });
+            log.info(
+                .request,
+                "{} <== 200 ({}), {d:.3} ms\n",
+                .{ client_endpoint, static_path, timestamp_in_ms },
+            );
+            client_socket.close();
         }
     }
 }

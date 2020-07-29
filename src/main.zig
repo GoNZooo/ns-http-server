@@ -8,6 +8,7 @@ const log = std.log;
 const process = std.process;
 const debug = std.debug;
 const Thread = std.Thread;
+const builtin = std.builtin;
 
 const network = @import("network");
 
@@ -31,6 +32,9 @@ pub fn main() anyerror!void {
     const socket = try network.Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
     try socket.bind(endpoint);
     try socket.listen();
+    if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
+        try socket.enablePortReuse(true);
+    }
 
     while (true) {
         const client_socket = socket.accept() catch |e| {

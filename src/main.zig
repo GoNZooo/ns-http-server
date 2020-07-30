@@ -30,50 +30,58 @@ pub fn main() anyerror!void {
     };
 
     const socket = try network.Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
+    var socket_set = try network.SocketSet.init(heap.page_allocator);
+    defer socket_set.deinit();
+    var client_sockets = std.ArrayList(?network.Socket).init(heap.page_allocator);
     try socket.bind(endpoint);
     try socket.listen();
     if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
         try socket.enablePortReuse(true);
     }
+    try socket_set.add(socket, .{ .read = true, .write = true });
 
     while (true) {
-        const client_socket = socket.accept() catch |e| {
-            switch (e) {
-                error.ConnectionAborted => {
-                    log.err(.accept, "Client aborted connection\n", .{});
+        _ = try network.waitForSocketEvent(&socket_set, 10_000_000_000);
+        if (socket_set.isReadyRead(socket)) {
+            const client_socket = socket.accept() catch |e| {
+                switch (e) {
+                    error.ConnectionAborted => {
+                        log.err(.accept, "Client aborted connection\n", .{});
 
-                    continue;
-                },
+                        continue;
+                    },
 
-                error.ProcessFdQuotaExceeded,
-                error.SystemFdQuotaExceeded,
-                error.SystemResources,
-                error.UnsupportedAddressFamily,
-                error.ProtocolFailure,
-                error.BlockedByFirewall,
-                error.WouldBlock,
-                error.PermissionDenied,
-                error.Unexpected,
-                => {
-                    continue;
-                },
+                    error.ProcessFdQuotaExceeded,
+                    error.SystemFdQuotaExceeded,
+                    error.SystemResources,
+                    error.UnsupportedAddressFamily,
+                    error.ProtocolFailure,
+                    error.BlockedByFirewall,
+                    error.WouldBlock,
+                    error.PermissionDenied,
+                    error.Unexpected,
+                    => {
+                        continue;
+                    },
+                }
+            };
+            try socket_set.add(client_socket, .{ .read = true, .write = false });
+            try insertIntoFirstFree(&client_sockets, client_socket);
+        }
+
+        for (client_sockets.items) |*maybe_client_socket, i| {
+            if (maybe_client_socket.*) |*client_socket| {
+                if (socket_set.isReadyRead(client_socket.*)) {
+                    try handleRequest(client_socket.*);
+                    socket_set.remove(client_socket.*);
+                    maybe_client_socket.* = null;
+                } else if (socket_set.isFaulted(client_socket.*)) {
+                    log.err(.socket_set, "Socket fault: {}\n", .{client_socket.*});
+                    socket_set.remove(client_socket.*);
+                    maybe_client_socket.* = null;
+                }
             }
-        };
-        _ = Thread.spawn(client_socket, handleRequest) catch |e| {
-            switch (e) {
-                error.OutOfMemory,
-                error.ThreadQuotaExceeded,
-                error.SystemResources,
-                error.LockedMemoryLimitExceeded,
-                => {
-                    _ = try client_socket.send(high_load_response);
-                },
-                error.Unexpected => {
-                    log.err(.spawn, "Unexpected error when trying to create thread.\n", .{});
-                    _ = try client_socket.send(internal_error_response);
-                },
-            }
-        };
+        }
     }
 }
 
@@ -82,6 +90,7 @@ fn handleRequest(client_socket: network.Socket) !void {
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     var request_stack_allocator = &fixed_buffer_allocator.allocator;
     defer fixed_buffer_allocator.reset();
+    defer client_socket.close();
 
     var client_socket_open = true;
     const start_timestamp = std.time.nanoTimestamp();
@@ -91,7 +100,6 @@ fn handleRequest(client_socket: network.Socket) !void {
             error.UnsupportedAddressFamily => {
                 log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
 
-                client_socket.close();
                 return;
             },
             error.InsufficientBytes, error.SystemResources, error.Unexpected => {
@@ -101,7 +109,6 @@ fn handleRequest(client_socket: network.Socket) !void {
                     .{e},
                 );
 
-                client_socket.close();
                 return;
             },
         }
@@ -112,13 +119,11 @@ fn handleRequest(client_socket: network.Socket) !void {
             error.NotConnected => {
                 log.err(.endpoint, "|== Client disconnected before endpoint discovery\n", .{});
 
-                client_socket.close();
                 return;
             },
             error.UnsupportedAddressFamily => {
                 log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
 
-                client_socket.close();
                 return;
             },
             error.InsufficientBytes, error.SystemResources, error.Unexpected => {
@@ -128,7 +133,6 @@ fn handleRequest(client_socket: network.Socket) !void {
                     .{e},
                 );
 
-                client_socket.close();
                 return;
             },
         }
@@ -168,7 +172,6 @@ fn handleRequest(client_socket: network.Socket) !void {
                         "{} <== {} 404 ({})\n",
                         .{ remote_endpoint, local_endpoint, static_path },
                     );
-                    client_socket.close();
 
                     return;
                 },
@@ -235,7 +238,6 @@ fn handleRequest(client_socket: network.Socket) !void {
                     .{ remote_endpoint, local_endpoint, static_path },
                 );
                 _ = try client_socket.send(not_modified_response);
-                client_socket.close();
 
                 return;
             }
@@ -279,8 +281,8 @@ fn handleRequest(client_socket: network.Socket) !void {
                         debug.panic("odd error: {}\n", .{e});
                     },
                 }
-                client_socket.close();
                 client_socket_open = false;
+
                 break;
             };
         }
@@ -295,6 +297,10 @@ fn handleRequest(client_socket: network.Socket) !void {
                 "{} <== {} 200 ({}), {d:.3} ms\n",
                 .{ remote_endpoint, local_endpoint, static_path, timestamp_in_ms },
             );
+        }
+    }
+}
+
 fn insertIntoFirstFree(
     client_sockets: *std.ArrayList(?network.Socket),
     client_socket: network.Socket,

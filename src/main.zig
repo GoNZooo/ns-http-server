@@ -295,9 +295,20 @@ fn handleRequest(client_socket: network.Socket) !void {
                 "{} <== {} 200 ({}), {d:.3} ms\n",
                 .{ remote_endpoint, local_endpoint, static_path, timestamp_in_ms },
             );
-            client_socket.close();
+fn insertIntoFirstFree(
+    client_sockets: *std.ArrayList(?network.Socket),
+    client_socket: network.Socket,
+) !void {
+    var inserted = false;
+    for (client_sockets.items) |*socket, i| {
+        if (socket.* == null) {
+            socket.* = client_socket;
+            inserted = true;
+            break;
         }
     }
+
+    if (!inserted) try client_sockets.append(client_socket);
 }
 
 fn determineContentType(path: []const u8) []const u8 {

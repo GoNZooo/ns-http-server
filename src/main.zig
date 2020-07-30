@@ -7,7 +7,6 @@ const fs = std.fs;
 const log = std.log;
 const process = std.process;
 const debug = std.debug;
-const Thread = std.Thread;
 const builtin = std.builtin;
 
 const network = @import("network");

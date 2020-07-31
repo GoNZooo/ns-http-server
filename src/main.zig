@@ -219,10 +219,51 @@ fn handleConnection(
 
                     return Connection.none;
                 };
-                const request = try parsing.Request.fromSlice(
+                const request = parsing.Request.fromSlice(
                     request_arena_allocator,
                     buffer[0..received],
-                );
+                ) catch |e| {
+                    switch (e) {
+                        error.OutOfMemory => {
+                            _ = try socket.send(high_load_response);
+                            socket.close();
+                            socket_set.remove(socket);
+
+                            return Connection.none;
+                        },
+                        error.InvalidCharacter,
+                        error.UnableToParseConnectionStatus,
+                        error.UnableToparseCacheControlValue,
+                        error.UnableToparseCacheControlHeader,
+                        error.UnableToParseWeakETagValue,
+                        error.UnableToParseNormalETagValue,
+                        error.UnableToParseETag,
+                        error.UnableToParseCrossOriginResourcePolicy,
+                        error.UnableToParseMethod,
+                        error.UnableToParseAllowCredentials,
+                        error.UnableToParseScheme,
+                        error.UnableToParseOriginScheme,
+                        error.UnableToFindHeaderSeparator,
+                        error.UnableToParseVersion,
+                        error.NoVersionGiven,
+                        error.NoResourceGiven,
+                        error.NoMethodGiven,
+                        => {
+                            _ = try socket.send(bad_request_response);
+                            socket.close();
+                            socket_set.remove(socket);
+
+                            return Connection.none;
+                        },
+                        error.Overflow => {
+                            _ = try socket.send(internal_error_response);
+                            socket.close();
+                            socket_set.remove(socket);
+
+                            return Connection.none;
+                        },
+                    }
+                };
                 errdefer request.deinit();
 
                 if (request.request_line.method == .get) {
@@ -494,6 +535,13 @@ const high_load_response =
     \\Content-length: 13
     \\
     \\Load too high
+;
+
+const bad_request_response =
+    \\HTTP/1.1 400 Bad Request
+    \\Content-length: 11
+    \\
+    \\Bad request
 ;
 
 const internal_error_response =

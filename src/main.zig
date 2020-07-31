@@ -168,6 +168,14 @@ pub fn main() anyerror!void {
 
         const local_endpoint = try socket.getLocalEndPoint();
 
+        if (debug_prints) {
+            debug.print("===== connections.capacity={}\n", .{connections.capacity});
+            debug.print("===== connections.items.len={}\n", .{connections.items.len});
+            for (connections.items) |c| {
+                debug.print("\tc={}\n", .{c});
+            }
+        }
+
         for (connections.items) |*connection| {
             connection.* = try handleConnection(
                 connection,

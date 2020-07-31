@@ -48,8 +48,13 @@ const SendingState = struct {
     start_timestamp: i128,
     headers_sent: bool = false,
 
-    pub fn sendChunk(self: *Self, allocator: *mem.Allocator, socket_set: *SocketSet) !Connection {
-        var buffer = try allocator.alloc(u8, max_stack_file_read_size - 100_000);
+    pub fn sendChunk(
+        self: *Self,
+        allocator: *mem.Allocator,
+        socket_set: *SocketSet,
+        chunk_size: usize,
+    ) !Connection {
+        var buffer = try allocator.alloc(u8, chunk_size);
 
         const read_bytes = try self.file.read(buffer);
         const send_buffer = buffer[0..read_bytes];
@@ -193,6 +198,7 @@ pub fn main() anyerror!void {
                 request_stack_allocator,
                 local_endpoint,
                 &socket_set,
+                chunk_size,
             );
             fixed_buffer_allocator.reset();
         }
@@ -204,6 +210,7 @@ fn handleConnection(
     stack_allocator: *mem.Allocator,
     local_endpoint: EndPoint,
     socket_set: *SocketSet,
+    send_chunk_size: usize,
 ) !Connection {
     var maybe_socket: ?Socket = switch (connection.*) {
         .receiving => |receiving| receiving.socket,
@@ -418,6 +425,7 @@ fn handleConnection(
 
             return connection.*;
         },
+
         .sending => |*sending| {
             const socket = sending.socket;
             if (socket_set.isReadyWrite(socket)) {
@@ -439,6 +447,7 @@ fn handleConnection(
                 const next_state = sending.sendChunk(
                     stack_allocator,
                     socket_set,
+                    send_chunk_size,
                 ) catch |e| new_state: {
                     switch (e) {
                         error.OutOfMemory => {

@@ -353,8 +353,27 @@ fn handleConnection(
                                 };
                                 log.err(
                                     .file,
-                                    "{} <== {} 404 ({})\n",
-                                    .{ remote_endpoint, local_endpoint, static_path },
+                                    "{} <== 404 ({})\n",
+                                    .{ remote_endpoint, static_path },
+                                );
+
+                                socket.close();
+                                socket_set.remove(socket);
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
+
+                                return Connection.none;
+                            },
+
+                            error.NameTooLong => {
+                                _ = socket.send(name_too_long_response) catch |send_error| {
+                                    log.err(.send, "=== send error 500 ===\n", .{});
+                                };
+                                log.err(
+                                    .file,
+                                    "{} <== 400 (Name too long, {})\n",
+                                    .{ remote_endpoint, static_path },
                                 );
 
                                 socket.close();
@@ -375,7 +394,6 @@ fn handleConnection(
                             error.SharingViolation,
                             error.PathAlreadyExists,
                             error.PipeBusy,
-                            error.NameTooLong,
                             error.InvalidUtf8,
                             error.BadPathName,
                             error.SymLinkLoop,
@@ -631,6 +649,13 @@ const bad_request_response =
     \\Content-length: 11
     \\
     \\Bad request
+;
+
+const name_too_long_response =
+    \\HTTP/1.1 400 Bad Request
+    \\Content-length: 45
+    \\
+    \\Bad request, name too long for this server :(
 ;
 
 const internal_error_response =

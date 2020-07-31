@@ -13,7 +13,82 @@ const network = @import("network");
 
 const parsing = @import("./parsing.zig");
 
+const ArrayList = std.ArrayList;
+const Socket = network.Socket;
+const SocketSet = network.SocketSet;
+const EndPoint = network.EndPoint;
+
 pub const log_level = .info;
+
+const Connection = union(enum) {
+    none: void,
+    receiving: ReceivingState,
+    sending: SendingState,
+};
+
+const ReceivingState = struct {
+    socket: Socket,
+    endpoint: EndPoint,
+};
+
+const SendingState = struct {
+    const Self = @This();
+
+    file: fs.File,
+    file_length: usize,
+    position: usize,
+    socket: Socket,
+    endpoint: EndPoint,
+    etag: u32,
+    arena: heap.ArenaAllocator,
+    static_path: []const u8,
+    request: parsing.Request,
+    start_timestamp: i128,
+    headers_sent: bool = false,
+
+    pub fn sendChunk(self: *Self, allocator: *mem.Allocator, socket_set: *SocketSet) !Connection {
+        var buffer = try allocator.alloc(u8, max_stack_file_read_size - 100_000);
+
+        const read_bytes = try self.file.read(buffer);
+        const send_buffer = buffer[0..read_bytes];
+        var sent_bytes = try self.socket.send(send_buffer);
+
+        // debug.print(
+        //     "send_buffer={}\n\tread_bytes={}\tbuffer.len={}\tsent_bytes={}\tfile.pos={}\n",
+        //     .{
+        //         send_buffer,
+        //         read_bytes,
+        //         buffer.len,
+        //         sent_bytes,
+        //         self.file.getPos() catch unreachable,
+        //     },
+        // );
+
+        if (read_bytes < buffer.len) {
+            const end_timestamp = std.time.nanoTimestamp();
+            const timestamp_in_ms = @intToFloat(f64, end_timestamp - self.start_timestamp) / 1_000_000.0;
+            log.info(
+                .send,
+                "{} <== {} ({d:.3} ms)\n",
+                .{ self.endpoint, self.static_path, timestamp_in_ms },
+            );
+            self.deinit(socket_set);
+
+            return Connection.none;
+        } else {
+            self.position += read_bytes;
+
+            return Connection{ .sending = self.* };
+        }
+    }
+
+    pub fn deinit(self: *Self, socket_set: *SocketSet) void {
+        self.arena.deinit();
+        self.socket.close();
+        self.file.close();
+        socket_set.remove(self.socket);
+    }
+};
 
 pub fn main() anyerror!void {
     try network.init();
@@ -28,10 +103,10 @@ pub fn main() anyerror!void {
         .port = 80,
     };
 
-    const socket = try network.Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
-    var socket_set = try network.SocketSet.init(heap.page_allocator);
+    const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
+    var socket_set = try SocketSet.init(heap.page_allocator);
     defer socket_set.deinit();
-    var client_sockets = std.ArrayList(?network.Socket).init(heap.page_allocator);
+    var connections = ArrayList(Connection).init(heap.page_allocator);
     try socket.bind(endpoint);
     try socket.listen();
     if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
@@ -39,8 +114,30 @@ pub fn main() anyerror!void {
     }
     try socket_set.add(socket, .{ .read = true, .write = true });
 
+    var memory_buffer: [max_stack_file_read_size]u8 = undefined;
+    var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
+    var request_stack_allocator = &fixed_buffer_allocator.allocator;
+
     while (true) {
-        _ = try network.waitForSocketEvent(&socket_set, 10_000_000_000);
+        _ = network.waitForSocketEvent(&socket_set, 10_000_000_000) catch |e| {
+            if (builtin.os.tag == .windows) {
+                switch (e) {
+                    error.FileDescriptorNotASocket => {
+                        debug.print("===== ERROR socket_set={}\n", .{socket_set});
+                        for (connections.items) |connection, i| {
+                            debug.print("===== ERROR connection{}={}\n", .{ i, connection });
+                        }
+                        process.exit(1);
+                    },
+                    error.OutOfMemory => {},
+                    error.Unexpected => {},
+                }
+            } else {
+                switch (e) {
+                    error.SystemResources, error.Unexpected => unreachable,
+                }
+            }
+        };
         if (socket_set.isReadyRead(socket)) {
             const client_socket = socket.accept() catch |e| {
                 switch (e) {
@@ -64,256 +161,287 @@ pub fn main() anyerror!void {
                     },
                 }
             };
-            try socket_set.add(client_socket, .{ .read = true, .write = false });
-            try insertIntoFirstFree(&client_sockets, client_socket);
+            try socket_set.add(client_socket, .{ .read = true, .write = true });
+            try insertIntoFirstFree(&connections, client_socket);
         }
 
-        for (client_sockets.items) |*maybe_client_socket, i| {
-            if (maybe_client_socket.*) |*client_socket| {
-                if (socket_set.isReadyRead(client_socket.*)) {
-                    try handleRequest(client_socket.*);
-                    socket_set.remove(client_socket.*);
-                    maybe_client_socket.* = null;
-                } else if (socket_set.isFaulted(client_socket.*)) {
-                    log.err(.socket_set, "Socket fault: {}\n", .{client_socket.*});
-                    socket_set.remove(client_socket.*);
-                    maybe_client_socket.* = null;
-                }
-            }
+        const local_endpoint = try socket.getLocalEndPoint();
+
+        for (connections.items) |*connection| {
+            connection.* = try handleConnection(
+                connection,
+                request_stack_allocator,
+                local_endpoint,
+                &socket_set,
+            );
+            fixed_buffer_allocator.reset();
         }
     }
 }
 
-fn handleRequest(client_socket: network.Socket) !void {
-    var memory_buffer: [max_stack_file_read_size]u8 = undefined;
-    var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
-    var request_stack_allocator = &fixed_buffer_allocator.allocator;
-    defer fixed_buffer_allocator.reset();
-    defer client_socket.close();
+fn handleConnection(
+    connection: *Connection,
+    stack_allocator: *mem.Allocator,
+    local_endpoint: EndPoint,
+    socket_set: *SocketSet,
+) !Connection {
+    var maybe_socket: ?Socket = switch (connection.*) {
+        .receiving => |receiving| receiving.socket,
+        .sending => |sending| sending.socket,
+        .none => null,
+    };
 
-    var client_socket_open = true;
-    const start_timestamp = std.time.nanoTimestamp();
+    if (maybe_socket) |s| {
+        if (socket_set.isFaulted(s)) {
+            s.close();
+            socket_set.remove(s);
 
-    const local_endpoint = client_socket.getLocalEndPoint() catch |e| {
-        switch (e) {
-            error.UnsupportedAddressFamily => {
-                log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
-
-                return;
-            },
-            error.InsufficientBytes, error.SystemResources, error.Unexpected => {
-                log.err(
-                    .endpoint,
-                    "|== Unexpected error for client endpoint discovery: {}\n",
-                    .{e},
-                );
-
-                return;
-            },
+            return Connection.none;
         }
-    };
+    }
 
-    const remote_endpoint = client_socket.getRemoteEndPoint() catch |e| {
-        switch (e) {
-            error.NotConnected => {
-                log.err(.endpoint, "|== Client disconnected before endpoint discovery\n", .{});
+    switch (connection.*) {
+        .receiving => |receiving| {
+            if (socket_set.isReadyRead(receiving.socket)) {
+                const start_timestamp = std.time.nanoTimestamp();
+                var arena = heap.ArenaAllocator.init(heap.page_allocator);
+                errdefer arena.deinit();
+                var request_arena_allocator = &arena.allocator;
+                const remote_endpoint = receiving.endpoint;
+                const socket = receiving.socket;
+                var buffer = try stack_allocator.alloc(u8, 2056);
+                var received = socket.receive(buffer[0..]) catch |e| {
+                    log.err(.receive, "=== receive error 1 ===\n", .{});
 
-                return;
-            },
-            error.UnsupportedAddressFamily => {
-                log.err(.endpoint, "|== Client connected with unsupported address family\n", .{});
+                    socket.close();
+                    socket_set.remove(socket);
 
-                return;
-            },
-            error.InsufficientBytes, error.SystemResources, error.Unexpected => {
-                log.err(
-                    .endpoint,
-                    "|== Unexpected error for client endpoint discovery: {}\n",
-                    .{e},
+                    return Connection.none;
+                };
+                const request = try parsing.Request.fromSlice(
+                    request_arena_allocator,
+                    buffer[0..received],
                 );
+                errdefer request.deinit();
 
-                return;
-            },
-        }
-    };
+                if (request.request_line.method == .get) {
+                    const resource_slice = request.request_line.resourceSlice()[1..];
+                    const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
+                    const static_path = try mem.concat(
+                        request_arena_allocator,
+                        u8,
+                        &[_][]const u8{ "static/", resource },
+                    );
+                    errdefer request_arena_allocator.free(static_path);
 
-    var buffer = try request_stack_allocator.alloc(u8, 2056);
-    var received = client_socket.receive(buffer[0..]) catch |e| {
-        log.err(.receive, "=== receive error 1 ===\n", .{});
-
-        return;
-    };
-
-    const request = try parsing.Request.fromSlice(request_stack_allocator, buffer[0..received]);
-    if (request.request_line.method == .get) {
-        const resource_slice = request.request_line.resourceSlice()[1..];
-        const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
-        const static_path = try mem.concat(
-            request_stack_allocator,
-            u8,
-            &[_][]const u8{ "static/", resource },
-        );
-
-        log.info(
-            .request,
-            "{} ==> {} {}\n",
-            .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
-        );
-
-        const file_descriptor = fs.cwd().openFile(static_path, .{}) catch |e| {
-            switch (e) {
-                error.FileNotFound => {
-                    _ = client_socket.send(not_found_response) catch |send_error| {
-                        log.err(.send, "=== send error 404 ===\n", .{});
-                    };
-                    log.err(
-                        .file,
-                        "{} <== {} 404 ({})\n",
-                        .{ remote_endpoint, local_endpoint, static_path },
+                    log.info(
+                        .request,
+                        "{} ==> {} {}\n",
+                        .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
                     );
 
-                    return;
-                },
+                    const file = fs.cwd().openFile(static_path, .{}) catch |e| {
+                        switch (e) {
+                            error.FileNotFound => {
+                                _ = socket.send(not_found_response) catch |send_error| {
+                                    log.err(.send, "=== send error 404 ===\n", .{});
+                                };
+                                log.err(
+                                    .file,
+                                    "{} <== {} 404 ({})\n",
+                                    .{ remote_endpoint, local_endpoint, static_path },
+                                );
 
-                error.IsDir,
-                error.SystemResources,
-                error.WouldBlock,
-                error.FileTooBig,
-                error.AccessDenied,
-                error.Unexpected,
-                error.SharingViolation,
-                error.PathAlreadyExists,
-                error.PipeBusy,
-                error.NameTooLong,
-                error.InvalidUtf8,
-                error.BadPathName,
-                error.SymLinkLoop,
-                error.ProcessFdQuotaExceeded,
-                error.SystemFdQuotaExceeded,
-                error.NoDevice,
-                error.NoSpaceLeft,
-                error.NotDir,
-                error.DeviceBusy,
-                error.FileLocksNotSupported,
-                => {
-                    _ = client_socket.send(internal_error_response) catch
-                        |send_error| {
-                        log.err(.send, "=== send error 500 ===\n", .{});
+                                socket.close();
+                                socket_set.remove(socket);
+
+                                return Connection.none;
+                            },
+
+                            error.IsDir,
+                            error.SystemResources,
+                            error.WouldBlock,
+                            error.FileTooBig,
+                            error.AccessDenied,
+                            error.Unexpected,
+                            error.SharingViolation,
+                            error.PathAlreadyExists,
+                            error.PipeBusy,
+                            error.NameTooLong,
+                            error.InvalidUtf8,
+                            error.BadPathName,
+                            error.SymLinkLoop,
+                            error.ProcessFdQuotaExceeded,
+                            error.SystemFdQuotaExceeded,
+                            error.NoDevice,
+                            error.NoSpaceLeft,
+                            error.NotDir,
+                            error.DeviceBusy,
+                            error.FileLocksNotSupported,
+                            => {
+                                _ = socket.send(internal_error_response) catch
+                                    |send_error| {
+                                    log.err(.send, "=== send error 500 ===\n", .{});
+                                };
+                                log.err(
+                                    .unexpected,
+                                    "{} <== {} 500 ({}) ({})\n",
+                                    .{ remote_endpoint, local_endpoint, static_path, e },
+                                );
+
+                                socket.close();
+                                socket_set.remove(socket);
+
+                                return Connection.none;
+                            },
+                        }
                     };
-                    log.err(
-                        .unexpected,
-                        "{} <== {} 500 ({}) ({})\n",
-                        .{ remote_endpoint, local_endpoint, static_path, e },
-                    );
 
-                    return;
-                },
-            }
-        };
+                    const stat = try file.stat();
+                    const last_modification_time = stat.mtime;
+                    const expected_file_size = stat.size;
 
-        const stat = try file_descriptor.stat();
-        const last_modification_time = stat.mtime;
-        const expected_file_size = stat.size;
+                    const hash_function = std.hash_map.getAutoHashFn(@TypeOf(last_modification_time));
+                    const etag = hash_function(last_modification_time);
+                    var if_none_match_request_header: ?parsing.Header = null;
+                    for (request.headers.items) |h| {
+                        switch (h) {
+                            .if_none_match => |d| if_none_match_request_header = h,
+                            else => {},
+                        }
+                    }
+                    if (if_none_match_request_header) |h| {
+                        const etag_value = fmt.parseInt(u32, h.if_none_match, 10) catch |e| etag_value: {
+                            log.err(.etag, "|== Unable to hash incoming etag value: {}\n", .{h.if_none_match});
 
-        const hash_function = std.hash_map.getAutoHashFn(@TypeOf(last_modification_time));
-        const etag_hash = hash_function(last_modification_time);
-        var if_none_match_request_header: ?parsing.Header = null;
-        for (request.headers.items) |h| {
-            switch (h) {
-                .if_none_match => |d| if_none_match_request_header = h,
-                else => {},
-            }
-        }
-        if (if_none_match_request_header) |h| {
-            const etag_value = fmt.parseInt(u32, h.if_none_match, 10) catch |e| etag_value: {
-                log.err(.etag, "|== Unable to hash incoming etag value: {}\n", .{h.if_none_match});
+                            break :etag_value 0;
+                        };
+                        if (etag_value == etag) {
+                            log.info(
+                                .response,
+                                "{} <== {} (304 via ETag)\n",
+                                .{ remote_endpoint, static_path },
+                            );
+                            _ = try socket.send(not_modified_response);
 
-                break :etag_value 0;
-            };
-            if (etag_value == etag_hash) {
-                log.info(
-                    .response,
-                    "{} <== {} 304 ({})\n",
-                    .{ remote_endpoint, local_endpoint, static_path },
-                );
-                _ = try client_socket.send(not_modified_response);
+                            socket.close();
+                            socket_set.remove(socket);
 
-                return;
-            }
-        }
+                            return Connection.none;
+                        }
+                    }
 
-        _ = client_socket.send("HTTP/1.1 200 OK\n") catch unreachable;
-        var header_buffer = try request_stack_allocator.alloc(u8, 128);
-        const etag_header = try fmt.bufPrint(
-            header_buffer,
-            "ETag: {}\n",
-            .{etag_hash},
-        );
-        _ = client_socket.send(etag_header) catch unreachable;
-        const content_type_header = try fmt.bufPrint(
-            header_buffer,
-            "Content-type: {}\n",
-            .{determineContentType(static_path)},
-        );
-        _ = client_socket.send(content_type_header) catch unreachable;
-        _ = client_socket.send("\n") catch unreachable;
+                    const sending = Connection{
+                        .sending = SendingState{
+                            .socket = socket,
+                            .file = file,
+                            .file_length = expected_file_size,
+                            .position = 0,
+                            .etag = etag,
+                            .endpoint = remote_endpoint,
+                            .arena = arena,
+                            .static_path = static_path,
+                            .request = request,
+                            .start_timestamp = start_timestamp,
+                        },
+                    };
 
-        var file_buffer = try request_stack_allocator.alloc(u8, max_stack_file_read_size - 100_000);
-        var read_bytes = try file_descriptor.read(file_buffer);
-        while (read_bytes == file_buffer.len) : (read_bytes = try file_descriptor.read(file_buffer)) {
-            _ = client_socket.send(file_buffer) catch |e| {
-                switch (e) {
-                    error.ConnectionResetByPeer, error.BrokenPipe => {
-                        log.err(
-                            .send,
-                            "Broken pipe / ConnectionResetByPeer sending to {}\n",
-                            .{try (client_socket.getRemoteEndPoint())},
-                        );
-                    },
-                    error.AccessDenied,
-                    error.WouldBlock,
-                    error.FastOpenAlreadyInProgress,
-                    error.MessageTooBig,
-                    error.SystemResources,
-                    error.Unexpected,
-                    => {
-                        debug.panic("odd error: {}\n", .{e});
-                    },
+                    return sending;
+                } else {
+                    socket_set.remove(socket);
+                    socket.close();
+
+                    return Connection.none;
                 }
-                client_socket_open = false;
+            }
 
-                break;
-            };
-        }
-        if (client_socket_open) {
-            _ = client_socket.send(file_buffer[0..read_bytes]) catch |e| {};
-            _ = client_socket.send("\n\n") catch unreachable;
+            return connection.*;
+        },
+        .sending => |*sending| {
+            const socket = sending.socket;
+            if (socket_set.isReadyWrite(socket)) {
+                if (!sending.headers_sent) {
+                    _ = socket.send("HTTP/1.1 200 OK\n") catch unreachable;
+                    var header_buffer = try stack_allocator.alloc(u8, 128);
+                    const etag_header = try fmt.bufPrint(header_buffer, "ETag: {}\n", .{sending.etag});
+                    _ = socket.send(etag_header) catch unreachable;
+                    const content_type_header = try fmt.bufPrint(
+                        header_buffer,
+                        "Content-type: {}\n",
+                        .{determineContentType(sending.static_path)},
+                    );
+                    _ = socket.send(content_type_header) catch unreachable;
+                    _ = socket.send("\n") catch unreachable;
 
-            const end_timestamp = std.time.nanoTimestamp();
-            const timestamp_in_ms = @intToFloat(f64, end_timestamp - start_timestamp) / 1_000_000.0;
-            log.info(
-                .request,
-                "{} <== {} 200 ({}), {d:.3} ms\n",
-                .{ remote_endpoint, local_endpoint, static_path, timestamp_in_ms },
-            );
-        }
+                    sending.headers_sent = true;
+                }
+                const next_state = sending.sendChunk(
+                    stack_allocator,
+                    socket_set,
+                ) catch |e| new_state: {
+                    switch (e) {
+                        error.OutOfMemory => {
+                            log.err(.send, "OOM!\n", .{});
+                        },
+                        error.ConnectionTimedOut,
+                        error.ConnectionResetByPeer,
+                        error.BrokenPipe,
+                        error.OperationAborted,
+                        => {
+                            log.err(
+                                .send,
+                                "Broken pipe / ConnectionResetByPeer sending to {}\n",
+                                .{sending.endpoint},
+                            );
+                        },
+                        error.IsDir,
+                        error.AccessDenied,
+                        error.WouldBlock,
+                        error.FastOpenAlreadyInProgress,
+                        error.MessageTooBig,
+                        error.SystemResources,
+                        error.InputOutput,
+                        error.Unexpected,
+                        => {
+                            debug.panic("odd error: {}\n", .{e});
+                        },
+                    }
+
+                    sending.socket.close();
+                    socket_set.remove(sending.socket);
+
+                    return Connection.none;
+                };
+
+                return next_state;
+            } else {
+                return connection.*;
+            }
+        },
+        .none => return Connection.none,
     }
 }
 
 fn insertIntoFirstFree(
-    client_sockets: *std.ArrayList(?network.Socket),
-    client_socket: network.Socket,
+    connections: *ArrayList(Connection),
+    socket: Socket,
 ) !void {
-    var inserted = false;
-    for (client_sockets.items) |*socket, i| {
-        if (socket.* == null) {
-            socket.* = client_socket;
-            inserted = true;
-            break;
+    var found_slot = false;
+    const endpoint = try socket.getRemoteEndPoint();
+    const receiving_state = ReceivingState{ .socket = socket, .endpoint = endpoint };
+
+    for (connections.items) |*connection, i| {
+        switch (connection.*) {
+            .none => {
+                connection.* = Connection{ .receiving = receiving_state };
+                found_slot = true;
+                break;
+            },
+            .receiving, .sending => {},
         }
     }
 
-    if (!inserted) try client_sockets.append(client_socket);
+    if (!found_slot) try connections.append(Connection{ .receiving = receiving_state });
 }
 
 fn determineContentType(path: []const u8) []const u8 {

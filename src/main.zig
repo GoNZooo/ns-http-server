@@ -316,6 +316,8 @@ fn handleConnection(
                             _ = try socket.send(bad_request_response);
                             socket.close();
 
+                            log.err(.parsing, "{} <== 400 Bad Request\n", .{remote_endpoint});
+
                             return Connection.none;
                         },
                         error.Overflow => {
@@ -632,7 +634,7 @@ const bad_request_response =
 ;
 
 const internal_error_response =
-    \\500 Internal Server Error
+    \\HTTP/1.1 500 Internal Server Error
     \\Content-length: 21
     \\
     \\Internal Server Error

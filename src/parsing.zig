@@ -34,6 +34,11 @@ pub const Request = struct {
             .allocator = allocator,
         };
     }
+
+    pub fn deinit(self: Self) void {
+        self.allocator.free(self.body);
+        self.headers.deinit();
+    }
 };
 
 pub const RequestLine = struct {

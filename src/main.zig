@@ -109,6 +109,7 @@ pub fn main() anyerror!void {
     var connections = ArrayList(Connection).init(heap.page_allocator);
     try socket.bind(endpoint);
     try socket.listen();
+    defer socket.close();
     if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
         try socket.enablePortReuse(true);
     }

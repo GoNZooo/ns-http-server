@@ -23,7 +23,7 @@ pub const Request = struct {
         var header_list = ArrayList(Header).init(allocator);
         var line = it.next();
         while (line != null and !mem.eql(u8, line.?, "\r")) : (line = it.next()) {
-            try header_list.append(try Header.fromSlice(allocator, line.?));
+            try header_list.append(try Header.fromSlice(line.?));
         }
         const body = try allocator.dupe(u8, it.rest());
 
@@ -81,6 +81,8 @@ pub const RequestLine = struct {
 };
 
 pub const Header = union(enum) {
+    const Self = @This();
+
     accept_encoding: []const u8,
     access_control_allow_credentials: bool,
     access_control_allow_headers: []const u8,
@@ -107,14 +109,13 @@ pub const Header = union(enum) {
     // I need to come up with something neat here.
     x_forwarded_for: []const u8,
 
-    // constructed when no known standard header matches
-    custom: CustomHeader,
+    unknown: void,
 
-    pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Header {
+    pub fn fromSlice(slice: []const u8) !Header {
         var maybe_colon_index = mem.indexOf(u8, slice, ":");
         if (maybe_colon_index) |colon_index| {
             var name_buffer: [2048]u8 = undefined;
-            var header_name = try allocator.alloc(u8, colon_index);
+            var header_name = name_buffer[0..colon_index];
             _ = lowerCase(slice[0..colon_index], header_name);
             const header_value = mem.trim(u8, slice[(colon_index + 1)..], " \r\n");
             if (mem.eql(u8, header_name, "content-size")) {
@@ -211,12 +212,7 @@ pub const Header = union(enum) {
 
                 return Header{ .origin = origin };
             } else {
-                return Header{
-                    .custom = CustomHeader{
-                        .name = header_name,
-                        .value = header_value,
-                    },
-                };
+                return Header.unknown;
             }
         } else {
             return error.UnableToFindHeaderSeparator;

@@ -96,6 +96,15 @@ pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
 
+    const arguments = try process.argsAlloc(heap.page_allocator);
+    const process_name = arguments[0];
+    if (arguments.len < 2) {
+        log.err(.arguments, "Usage: {} <chunk_size>\n", .{process_name});
+
+        process.exit(1);
+    }
+    const chunk_size = try fmt.parseInt(usize, arguments[1], 10);
+
     const endpoint = network.EndPoint{
         .address = network.Address{
             .ipv4 = .{
@@ -529,7 +538,7 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
     return false;
 }
 
-const max_stack_file_read_size = 1_000_000;
+const max_stack_file_read_size = 4_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;
 
 const not_found_response =

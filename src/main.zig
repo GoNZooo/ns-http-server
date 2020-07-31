@@ -48,6 +48,8 @@ const SendingState = struct {
     start_timestamp: i128,
     headers_sent: bool = false,
 
+    leak_detecting_allocator: ?testing.LeakCountAllocator = null,
+
     pub fn sendChunk(
         self: *Self,
         allocator: *mem.Allocator,
@@ -80,6 +82,9 @@ const SendingState = struct {
                 .{ self.endpoint, self.static_path, timestamp_in_ms },
             );
             self.deinit(socket_set);
+            if (self.leak_detecting_allocator) |lda| {
+                try lda.validate();
+            }
 
             return Connection.none;
         } else {
@@ -359,6 +364,7 @@ fn handleConnection(
 
                                 socket.close();
                                 socket_set.remove(socket);
+                                request.deinit();
 
                                 return Connection.none;
                             },
@@ -379,8 +385,16 @@ fn handleConnection(
                         }
                     }
                     if (if_none_match_request_header) |h| {
-                        const etag_value = fmt.parseInt(u32, h.if_none_match, 10) catch |e| etag_value: {
-                            log.err(.etag, "|== Unable to hash incoming etag value: {}\n", .{h.if_none_match});
+                        const etag_value = fmt.parseInt(
+                            u32,
+                            h.if_none_match,
+                            10,
+                        ) catch |e| etag_value: {
+                            log.err(
+                                .etag,
+                                "|== Unable to hash incoming etag value: {}\n",
+                                .{h.if_none_match},
+                            );
 
                             break :etag_value 0;
                         };
@@ -411,6 +425,7 @@ fn handleConnection(
                             .static_path = static_path,
                             .request = request,
                             .start_timestamp = start_timestamp,
+                            .leak_detecting_allocator = lda,
                         },
                     };
 
@@ -418,6 +433,7 @@ fn handleConnection(
                 } else {
                     socket_set.remove(socket);
                     socket.close();
+                    request.deinit();
 
                     return Connection.none;
                 }
@@ -453,6 +469,7 @@ fn handleConnection(
                         error.OutOfMemory => {
                             log.err(.send, "OOM!\n", .{});
                         },
+                        error.Leak => unreachable,
                         error.ConnectionTimedOut,
                         error.ConnectionResetByPeer,
                         error.BrokenPipe,
@@ -477,8 +494,7 @@ fn handleConnection(
                         },
                     }
 
-                    sending.socket.close();
-                    socket_set.remove(sending.socket);
+                    sending.deinit(socket_set);
 
                     return Connection.none;
                 };

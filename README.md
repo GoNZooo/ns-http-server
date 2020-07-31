@@ -1,5 +1,3 @@
-# network-sandbox
+# ns-http-server
 
-Just for playing around with network stuff via `zig-network`.
-
-Currently it serves files from the `./static` directory.
+Very basic HTTP server, serves files from the `./static` directory.

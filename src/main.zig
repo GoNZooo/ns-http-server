@@ -236,7 +236,8 @@ fn handleConnection(
         .receiving => |receiving| {
             if (socket_set.isReadyRead(receiving.socket)) {
                 const start_timestamp = std.time.nanoTimestamp();
-                var arena = heap.ArenaAllocator.init(heap.page_allocator);
+                var lda = testing.LeakCountAllocator.init(heap.page_allocator);
+                var arena = heap.ArenaAllocator.init(&lda.allocator);
                 errdefer arena.deinit();
                 var request_arena_allocator = &arena.allocator;
                 const remote_endpoint = receiving.endpoint;
@@ -327,6 +328,7 @@ fn handleConnection(
 
                                 socket.close();
                                 socket_set.remove(socket);
+                                request.deinit();
 
                                 return Connection.none;
                             },

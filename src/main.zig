@@ -120,7 +120,7 @@ pub fn main() anyerror!void {
     var request_stack_allocator = &fixed_buffer_allocator.allocator;
 
     while (true) {
-        _ = network.waitForSocketEvent(&socket_set, 10_000_000_000) catch |e| {
+        _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {
             if (builtin.os.tag == .windows) {
                 switch (e) {
                     error.FileDescriptorNotASocket => {

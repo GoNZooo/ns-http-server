@@ -18,6 +18,8 @@ const Socket = network.Socket;
 const SocketSet = network.SocketSet;
 const EndPoint = network.EndPoint;
 
+const debug_prints = false;
+
 pub const log_level = .info;
 
 const Connection = union(enum) {

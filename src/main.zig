@@ -527,7 +527,7 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
     return false;
 }
 
-const max_stack_file_read_size = 4_000_000;
+const max_stack_file_read_size = 1_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;
 
 const not_found_response =

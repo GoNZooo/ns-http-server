@@ -499,6 +499,10 @@ fn determineContentType(path: []const u8) []const u8 {
         "text/css"
     else if (mem.endsWith(u8, path, ".jpg") or mem.endsWith(u8, path, ".jpeg"))
         "image/jpeg"
+    else if (mem.endsWith(u8, path, ".mp4"))
+        "video/mp4"
+    else if (mem.endsWith(u8, path, ".mkv"))
+        "video/x-matroska"
     else if (mem.endsWith(u8, path, ".png"))
         "image/png"
     else if (mem.endsWith(u8, path, ".json"))

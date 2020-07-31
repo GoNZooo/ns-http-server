@@ -42,13 +42,14 @@ const SendingState = struct {
     socket: Socket,
     endpoint: EndPoint,
     etag: u32,
-    arena: heap.ArenaAllocator,
+    arena: *heap.ArenaAllocator,
     static_path: []const u8,
     request: parsing.Request,
     start_timestamp: i128,
     headers_sent: bool = false,
 
-    leak_detecting_allocator: ?testing.LeakCountAllocator = null,
+    longtime_allocator: *mem.Allocator,
+    leak_detecting_allocator: ?*testing.LeakCountAllocator = null,
 
     pub fn sendChunk(
         self: *Self,
@@ -81,11 +82,7 @@ const SendingState = struct {
                 "{} <== {} ({d:.3} ms)\n",
                 .{ self.endpoint, self.static_path, timestamp_in_ms },
             );
-            self.deinit(socket_set);
-            if (self.leak_detecting_allocator) |lda| {
-                try lda.validate();
-            }
-
+            try self.deinit(socket_set);
             return Connection.none;
         } else {
             self.position += read_bytes;
@@ -94,8 +91,15 @@ const SendingState = struct {
         }
     }
 
-    pub fn deinit(self: *Self, socket_set: *SocketSet) void {
+    pub fn deinit(self: *Self, socket_set: *SocketSet) !void {
+        // self.request.deinit();
         self.arena.deinit();
+        if (self.leak_detecting_allocator) |lda| {
+            try lda.validate();
+            self.longtime_allocator.destroy(lda);
+        }
+
+        self.longtime_allocator.destroy(self.arena);
         self.socket.close();
         self.file.close();
         socket_set.remove(self.socket);
@@ -114,6 +118,15 @@ pub fn main() anyerror!void {
         process.exit(1);
     }
     const chunk_size = try fmt.parseInt(usize, arguments[1], 10);
+
+    var memory_debug = false;
+    for (arguments) |argument| {
+        if (mem.eql(u8, argument, "memory-debug")) {
+            memory_debug = true;
+
+            break;
+        }
+    }
 
     const endpoint = network.EndPoint{
         .address = network.Address{
@@ -139,6 +152,7 @@ pub fn main() anyerror!void {
     var memory_buffer: [max_stack_file_read_size]u8 = undefined;
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     var request_stack_allocator = &fixed_buffer_allocator.allocator;
+    var logging_allocator = heap.loggingAllocator(heap.page_allocator, std.io.getStdOut().writer());
 
     while (true) {
         _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {
@@ -201,9 +215,11 @@ pub fn main() anyerror!void {
             connection.* = try handleConnection(
                 connection,
                 request_stack_allocator,
+                if (memory_debug) &logging_allocator.allocator else heap.page_allocator,
                 local_endpoint,
                 &socket_set,
                 chunk_size,
+                memory_debug,
             );
             fixed_buffer_allocator.reset();
         }
@@ -213,9 +229,11 @@ pub fn main() anyerror!void {
 fn handleConnection(
     connection: *Connection,
     stack_allocator: *mem.Allocator,
+    longtime_allocator: *mem.Allocator,
     local_endpoint: EndPoint,
     socket_set: *SocketSet,
     send_chunk_size: usize,
+    memory_debug: bool,
 ) !Connection {
     var maybe_socket: ?Socket = switch (connection.*) {
         .receiving => |receiving| receiving.socket,
@@ -236,10 +254,21 @@ fn handleConnection(
         .receiving => |receiving| {
             if (socket_set.isReadyRead(receiving.socket)) {
                 const start_timestamp = std.time.nanoTimestamp();
-                var lda = testing.LeakCountAllocator.init(heap.page_allocator);
-                var arena = heap.ArenaAllocator.init(&lda.allocator);
+
+                var lda: ?*testing.LeakCountAllocator = null;
+                if (memory_debug) {
+                    lda = try longtime_allocator.create(testing.LeakCountAllocator);
+                    lda.?.* = testing.LeakCountAllocator.init(longtime_allocator);
+                }
+                var arena = try longtime_allocator.create(heap.ArenaAllocator);
+                if (lda) |l| {
+                    arena.* = heap.ArenaAllocator.init(&l.allocator);
+                } else {
+                    arena.* = heap.ArenaAllocator.init(longtime_allocator);
+                }
                 errdefer arena.deinit();
                 var request_arena_allocator = &arena.allocator;
+
                 const remote_endpoint = receiving.endpoint;
                 const socket = receiving.socket;
                 var buffer = try stack_allocator.alloc(u8, 2056);
@@ -251,15 +280,18 @@ fn handleConnection(
 
                     return Connection.none;
                 };
+
                 const request = parsing.Request.fromSlice(
                     request_arena_allocator,
                     buffer[0..received],
                 ) catch |e| {
+                    longtime_allocator.destroy(arena);
+                    longtime_allocator.destroy(lda);
+                    socket_set.remove(socket);
                     switch (e) {
                         error.OutOfMemory => {
                             _ = try socket.send(high_load_response);
                             socket.close();
-                            socket_set.remove(socket);
 
                             return Connection.none;
                         },
@@ -283,20 +315,17 @@ fn handleConnection(
                         => {
                             _ = try socket.send(bad_request_response);
                             socket.close();
-                            socket_set.remove(socket);
 
                             return Connection.none;
                         },
                         error.Overflow => {
                             _ = try socket.send(internal_error_response);
                             socket.close();
-                            socket_set.remove(socket);
 
                             return Connection.none;
                         },
                     }
                 };
-                errdefer request.deinit();
 
                 if (request.request_line.method == .get) {
                     const resource_slice = request.request_line.resourceSlice()[1..];
@@ -328,7 +357,9 @@ fn handleConnection(
 
                                 socket.close();
                                 socket_set.remove(socket);
-                                request.deinit();
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
 
                                 return Connection.none;
                             },
@@ -366,7 +397,9 @@ fn handleConnection(
 
                                 socket.close();
                                 socket_set.remove(socket);
-                                request.deinit();
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
 
                                 return Connection.none;
                             },
@@ -410,6 +443,9 @@ fn handleConnection(
 
                             socket.close();
                             socket_set.remove(socket);
+                            arena.deinit();
+                            longtime_allocator.destroy(arena);
+                            longtime_allocator.destroy(lda);
 
                             return Connection.none;
                         }
@@ -428,6 +464,7 @@ fn handleConnection(
                             .request = request,
                             .start_timestamp = start_timestamp,
                             .leak_detecting_allocator = lda,
+                            .longtime_allocator = longtime_allocator,
                         },
                     };
 
@@ -435,7 +472,7 @@ fn handleConnection(
                 } else {
                     socket_set.remove(socket);
                     socket.close();
-                    request.deinit();
+                    arena.deinit();
 
                     return Connection.none;
                 }
@@ -496,7 +533,7 @@ fn handleConnection(
                         },
                     }
 
-                    sending.deinit(socket_set);
+                    try sending.deinit(socket_set);
 
                     return Connection.none;
                 };

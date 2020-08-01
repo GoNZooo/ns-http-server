@@ -284,13 +284,19 @@ fn handleConnection(
                 const request = parsing.Request.fromSlice(
                     request_arena_allocator,
                     buffer[0..received],
-                ) catch |e| {
+                ) catch |parsing_error| {
                     longtime_allocator.destroy(arena);
                     longtime_allocator.destroy(lda);
                     socket_set.remove(socket);
-                    switch (e) {
+                    switch (parsing_error) {
                         error.OutOfMemory => {
-                            _ = try socket.send(high_load_response);
+                            _ = socket.send(high_load_response) catch |send_error| {
+                                log.err(
+                                    .parsing,
+                                    "{} <== OOM error send error: {}\n",
+                                    .{ remote_endpoint, send_error },
+                                );
+                            };
                             socket.close();
 
                             return Connection.none;
@@ -313,15 +319,35 @@ fn handleConnection(
                         error.NoResourceGiven,
                         error.NoMethodGiven,
                         => {
-                            _ = try socket.send(bad_request_response);
+                            log.err(
+                                .parsing,
+                                "{} <== 400 Bad Request: {}\n",
+                                .{ remote_endpoint, parsing_error },
+                            );
+                            _ = socket.send(bad_request_response) catch |send_error| {
+                                log.err(
+                                    .parsing,
+                                    "{} <== 400 Bad Request send error\n",
+                                    .{remote_endpoint},
+                                );
+                            };
                             socket.close();
-
-                            log.err(.parsing, "{} <== 400 Bad Request\n", .{remote_endpoint});
 
                             return Connection.none;
                         },
                         error.Overflow => {
-                            _ = try socket.send(internal_error_response);
+                            log.err(
+                                .parsing,
+                                "{} <== 500 Internal error: Overflow\n",
+                                .{remote_endpoint},
+                            );
+                            _ = socket.send(internal_error_response) catch |send_error| {
+                                log.err(
+                                    .parsing,
+                                    "{} <== 500 Internal error send error: {}\n",
+                                    .{ remote_endpoint, send_error },
+                                );
+                            };
                             socket.close();
 
                             return Connection.none;
@@ -332,11 +358,36 @@ fn handleConnection(
                 if (request.request_line.method == .get) {
                     const resource_slice = request.request_line.resourceSlice()[1..];
                     const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
-                    const static_path = try mem.concat(
+                    const static_path = mem.concat(
                         request_arena_allocator,
                         u8,
                         &[_][]const u8{ "static/", resource },
-                    );
+                    ) catch |concat_error| {
+                        switch (concat_error) {
+                            error.OutOfMemory => {
+                                log.err(
+                                    .static_path,
+                                    "=== OOM while concatting static path: {}\n",
+                                    .{resource},
+                                );
+                                _ = socket.send(high_load_response) catch |send_error| {
+                                    log.err(
+                                        .static_path,
+                                        "=== High load / OOM send error: {}\n",
+                                        .{send_error},
+                                    );
+                                };
+
+                                socket.close();
+                                socket_set.remove(socket);
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
+
+                                return Connection.none;
+                            },
+                        }
+                    };
                     errdefer request_arena_allocator.free(static_path);
 
                     log.info(
@@ -349,7 +400,7 @@ fn handleConnection(
                         switch (e) {
                             error.FileNotFound => {
                                 _ = socket.send(not_found_response) catch |send_error| {
-                                    log.err(.send, "=== send error 404 ===\n", .{});
+                                    log.err(.send, "=== send error 404 {} ===\n", .{send_error});
                                 };
                                 log.err(
                                     .file,
@@ -368,7 +419,7 @@ fn handleConnection(
 
                             error.NameTooLong => {
                                 _ = socket.send(name_too_long_response) catch |send_error| {
-                                    log.err(.send, "=== send error 500 ===\n", .{});
+                                    log.err(.send, "=== send error 500 {} ===\n", .{send_error});
                                 };
                                 log.err(
                                     .file,
@@ -405,14 +456,13 @@ fn handleConnection(
                             error.DeviceBusy,
                             error.FileLocksNotSupported,
                             => {
-                                _ = socket.send(internal_error_response) catch
-                                    |send_error| {
-                                    log.err(.send, "=== send error 500 ===\n", .{});
+                                _ = socket.send(internal_error_response) catch |send_error| {
+                                    log.err(.send, "=== send error 500: {} ===\n", .{send_error});
                                 };
                                 log.err(
                                     .unexpected,
-                                    "{} <== {} 500 ({}) ({})\n",
-                                    .{ remote_endpoint, local_endpoint, static_path, e },
+                                    "{} <== 500 ({}) ({})\n",
+                                    .{ remote_endpoint, static_path, e },
                                 );
 
                                 socket.close();
@@ -426,7 +476,46 @@ fn handleConnection(
                         }
                     };
 
-                    const stat = try file.stat();
+                    const stat = file.stat() catch |stat_error| {
+                        switch (stat_error) {
+                            error.AccessDenied => {
+                                _ = socket.send(not_found_response) catch |send_error| {
+                                    log.err(.send, "=== send error 404 {} ===\n", .{send_error});
+                                };
+                                log.err(
+                                    .stat,
+                                    "{} <== 404 ({})\n",
+                                    .{ remote_endpoint, static_path },
+                                );
+
+                                socket.close();
+                                socket_set.remove(socket);
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
+
+                                return Connection.none;
+                            },
+                            error.SystemResources, error.Unexpected => {
+                                _ = socket.send(internal_error_response) catch |send_error| {
+                                    log.err(.send, "=== send error 500: {} ===\n", .{send_error});
+                                };
+                                log.err(
+                                    .stat,
+                                    "{} <== 500 ({}) ({})\n",
+                                    .{ remote_endpoint, static_path, stat_error },
+                                );
+
+                                socket.close();
+                                socket_set.remove(socket);
+                                arena.deinit();
+                                longtime_allocator.destroy(lda);
+                                longtime_allocator.destroy(arena);
+
+                                return Connection.none;
+                            },
+                        }
+                    };
                     const last_modification_time = stat.mtime;
                     const expected_file_size = stat.size;
 
@@ -459,7 +548,13 @@ fn handleConnection(
                                 "{} <== {} (304 via ETag)\n",
                                 .{ remote_endpoint, static_path },
                             );
-                            _ = try socket.send(not_modified_response);
+                            _ = socket.send(not_modified_response) catch |send_error| {
+                                log.err(
+                                    .etag,
+                                    "{} <== 304 not modified send error: {}\n",
+                                    .{ remote_endpoint, send_error },
+                                );
+                            };
 
                             socket.close();
                             socket_set.remove(socket);

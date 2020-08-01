@@ -303,7 +303,6 @@ fn handleConnection(
                                 );
                             };
                             socket.close();
-                            arena.deinit();
 
                             return Connection.none;
                         },
@@ -337,7 +336,6 @@ fn handleConnection(
                                     .{remote_endpoint},
                                 );
                             };
-                            arena.deinit();
                             socket.close();
 
                             return Connection.none;
@@ -355,7 +353,6 @@ fn handleConnection(
                                     .{ remote_endpoint, send_error },
                                 );
                             };
-                            arena.deinit();
                             socket.close();
 
                             return Connection.none;

@@ -220,6 +220,7 @@ pub fn main() anyerror!void {
                 &socket_set,
                 chunk_size,
                 memory_debug,
+                connections,
             );
             fixed_buffer_allocator.reset();
         }
@@ -234,6 +235,7 @@ fn handleConnection(
     socket_set: *SocketSet,
     send_chunk_size: usize,
     memory_debug: bool,
+    connections: ArrayList(Connection),
 ) !Connection {
     var maybe_socket: ?Socket = switch (connection.*) {
         .receiving => |receiving| receiving.socket,
@@ -286,7 +288,9 @@ fn handleConnection(
                     buffer[0..received],
                 ) catch |parsing_error| {
                     longtime_allocator.destroy(arena);
-                    longtime_allocator.destroy(lda);
+                    if (lda) |a| {
+                        longtime_allocator.destroy(a);
+                    }
                     socket_set.remove(socket);
                     switch (parsing_error) {
                         error.OutOfMemory => {
@@ -355,9 +359,110 @@ fn handleConnection(
                     }
                 };
 
-                if (request.request_line.method == .get) {
-                    const resource_slice = request.request_line.resourceSlice()[1..];
-                    const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
+                const resource_slice = request.request_line.resourceSlice()[1..];
+                const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
+
+                if (request.request_line.method == .get and mem.eql(u8, resource, "diagnostics")) {
+                    const content_format =
+                        \\Connections: {}
+                        \\
+                    ;
+
+                    var content = fmt.allocPrint(
+                        stack_allocator,
+                        content_format,
+                        .{connections.items.len},
+                    ) catch |alloc_print_error| {
+                        switch (alloc_print_error) {
+                            error.OutOfMemory => {
+                                log.err(
+                                    .diagnostics,
+                                    "Unable to allocate memory for diagnostics content.\n",
+                                    .{},
+                                );
+
+                                socket.close();
+                                socket_set.remove(socket);
+                                arena.deinit();
+                                longtime_allocator.destroy(arena);
+                                if (lda) |a| {
+                                    longtime_allocator.destroy(a);
+                                }
+
+                                return Connection.none;
+                            },
+                        }
+                    };
+                    for (connections.items) |c| {
+                        const connection_info = switch (c) {
+                            .receiving => |r| try fmt.allocPrint(
+                                stack_allocator,
+                                "R: {}\n",
+                                .{r.endpoint},
+                            ),
+                            .sending => |s| connection_info: {
+                                var string = try fmt.allocPrint(
+                                    stack_allocator,
+                                    "S: {} => {}\n",
+                                    .{ s.static_path, s.endpoint },
+                                );
+                                for (s.request.headers.items) |h| {
+                                    string = try mem.concat(
+                                        stack_allocator,
+                                        u8,
+                                        &[_][]const u8{
+                                            string,
+                                            try fmt.allocPrint(stack_allocator, "\t{}\n", .{h}),
+                                        },
+                                    );
+                                }
+                                string = try mem.concat(stack_allocator, u8, &[_][]const u8{
+                                    string,
+                                    try fmt.allocPrint(stack_allocator, "\t{}\n", .{s.request.body}),
+                                });
+
+                                break :connection_info string;
+                            },
+                            .none => "None",
+                        };
+                        content = mem.concat(
+                            stack_allocator,
+                            u8,
+                            &[_][]const u8{ content, connection_info },
+                        ) catch |concat_error| content: {
+                            log.err(
+                                .diagnostics,
+                                "Concat error while adding '{}'\n",
+                                .{connection_info},
+                            );
+
+                            break :content content;
+                        };
+                    }
+
+                    const format =
+                        \\HTTP/1.1 200 OK
+                        \\Content-length: {}
+                        \\Content-type: text/plain
+                        \\
+                        \\{}
+                    ;
+                    const response = try fmt.allocPrint(stack_allocator, format, .{ content.len, content });
+
+                    _ = socket.send(response) catch |send_error| {
+                        log.err(.diagnostics, "=== Diagnostics send error: {}\n", .{send_error});
+                    };
+
+                    socket.close();
+                    socket_set.remove(socket);
+                    arena.deinit();
+                    longtime_allocator.destroy(arena);
+                    if (lda) |a| {
+                        longtime_allocator.destroy(a);
+                    }
+
+                    return Connection.none;
+                } else if (request.request_line.method == .get) {
                     const static_path = mem.concat(
                         request_arena_allocator,
                         u8,
@@ -560,7 +665,9 @@ fn handleConnection(
                             socket_set.remove(socket);
                             arena.deinit();
                             longtime_allocator.destroy(arena);
-                            longtime_allocator.destroy(lda);
+                            if (lda) |a| {
+                                longtime_allocator.destroy(lda);
+                            }
 
                             return Connection.none;
                         }

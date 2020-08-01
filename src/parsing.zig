@@ -14,10 +14,12 @@ pub const Request = struct {
     request_line: RequestLine,
     headers: ArrayList(Header),
     body: []const u8,
+    request_text: []const u8,
     allocator: *mem.Allocator,
 
     pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Self {
-        var it = mem.split(slice, "\n");
+        var request_text = try allocator.dupe(u8, slice);
+        var it = mem.split(request_text, "\n");
         const request_line_slice = it.next() orelse unreachable;
         const request_line = try RequestLine.fromSlice(request_line_slice);
         var header_list = ArrayList(Header).init(allocator);
@@ -25,19 +27,21 @@ pub const Request = struct {
         while (line != null and !mem.eql(u8, line.?, "\r")) : (line = it.next()) {
             try header_list.append(try Header.fromSlice(line.?));
         }
-        const body = try allocator.dupe(u8, it.rest());
+        const body = it.rest();
 
         return Self{
             .request_line = request_line,
             .headers = header_list,
             .body = body,
             .allocator = allocator,
+            .request_text = request_text,
         };
     }
 
     pub fn deinit(self: Self) void {
         self.allocator.free(self.body);
         self.headers.deinit();
+        self.allocator.free(request_text);
     }
 };
 

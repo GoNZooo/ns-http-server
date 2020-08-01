@@ -287,6 +287,7 @@ fn handleConnection(
                     request_arena_allocator,
                     buffer[0..received],
                 ) catch |parsing_error| {
+                    arena.deinit();
                     longtime_allocator.destroy(arena);
                     if (lda) |a| {
                         longtime_allocator.destroy(a);

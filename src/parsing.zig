@@ -19,10 +19,12 @@ pub const Request = struct {
 
     pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Self {
         var request_text = try allocator.dupe(u8, slice);
+        errdefer allocator.free(request_text);
         var it = mem.split(request_text, "\n");
         const request_line_slice = it.next() orelse unreachable;
         const request_line = try RequestLine.fromSlice(request_line_slice);
         var header_list = ArrayList(Header).init(allocator);
+        errdefer header_list.deinit();
         var line = it.next();
         while (line != null and !mem.eql(u8, line.?, "\r")) : (line = it.next()) {
             try header_list.append(try Header.fromSlice(line.?));

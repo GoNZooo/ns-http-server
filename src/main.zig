@@ -31,6 +31,7 @@ const Connection = union(enum) {
 const ReceivingState = struct {
     socket: Socket,
     endpoint: EndPoint,
+    start_timestamp: i128,
 };
 
 const SendingState = struct {
@@ -256,9 +257,14 @@ fn handleConnection(
 
     switch (connection.*) {
         .receiving => |receiving| {
-            if (socket_set.isReadyRead(receiving.socket)) {
-                const start_timestamp = std.time.nanoTimestamp();
+            const timestamp = std.time.nanoTimestamp();
 
+            if ((timestamp - receiving.start_timestamp) > 30_000_000_000) {
+                socket_set.remove(receiving.socket);
+                receiving.socket.close();
+
+                return Connection.none;
+            } else if (socket_set.isReadyRead(receiving.socket)) {
                 var lda: ?*testing.LeakCountAllocator = null;
                 if (memory_debug) {
                     lda = try longtime_allocator.create(testing.LeakCountAllocator);
@@ -679,7 +685,7 @@ fn handleConnection(
                             .arena = arena,
                             .static_path = static_path,
                             .request = request,
-                            .start_timestamp = start_timestamp,
+                            .start_timestamp = timestamp,
                             .leak_detecting_allocator = lda,
                             .longtime_allocator = longtime_allocator,
                         },
@@ -764,13 +770,15 @@ fn handleConnection(
     }
 }
 
-fn insertIntoFirstFree(
-    connections: *ArrayList(Connection),
-    socket: Socket,
-) !void {
+fn insertIntoFirstFree(connections: *ArrayList(Connection), socket: Socket) !void {
+    const timestamp = std.time.nanoTimestamp();
     var found_slot = false;
     const endpoint = try socket.getRemoteEndPoint();
-    const receiving_state = ReceivingState{ .socket = socket, .endpoint = endpoint };
+    const receiving_state = ReceivingState{
+        .socket = socket,
+        .endpoint = endpoint,
+        .start_timestamp = timestamp,
+    };
 
     for (connections.items) |*connection, i| {
         switch (connection.*) {

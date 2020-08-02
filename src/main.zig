@@ -174,6 +174,7 @@ pub fn main() anyerror!void {
                 }
             }
         };
+
         if (socket_set.isReadyRead(socket)) {
             const client_socket = socket.accept() catch |e| {
                 switch (e) {
@@ -197,6 +198,7 @@ pub fn main() anyerror!void {
                     },
                 }
             };
+
             try socket_set.add(client_socket, .{ .read = true, .write = true });
             try insertIntoFirstFree(&connections, client_socket);
         }
@@ -289,9 +291,7 @@ fn handleConnection(
                 ) catch |parsing_error| {
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| {
-                        longtime_allocator.destroy(a);
-                    }
+                    if (lda) |a| longtime_allocator.destroy(a);
                     socket_set.remove(socket);
                     switch (parsing_error) {
                         error.OutOfMemory => {
@@ -386,9 +386,7 @@ fn handleConnection(
                                 socket_set.remove(socket);
                                 arena.deinit();
                                 longtime_allocator.destroy(arena);
-                                if (lda) |a| {
-                                    longtime_allocator.destroy(a);
-                                }
+                                if (lda) |a| longtime_allocator.destroy(a);
 
                                 return Connection.none;
                             },
@@ -458,9 +456,7 @@ fn handleConnection(
                     socket_set.remove(socket);
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| {
-                        longtime_allocator.destroy(a);
-                    }
+                    if (lda) |a| longtime_allocator.destroy(a);
 
                     return Connection.none;
                 } else if (request.request_line.method == .get) {
@@ -487,7 +483,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -517,7 +513,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -536,7 +532,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -574,7 +570,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -597,7 +593,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -615,7 +611,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                longtime_allocator.destroy(lda);
+                                if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.none;
@@ -666,9 +662,7 @@ fn handleConnection(
                             socket_set.remove(socket);
                             arena.deinit();
                             longtime_allocator.destroy(arena);
-                            if (lda) |a| {
-                                longtime_allocator.destroy(lda);
-                            }
+                            if (lda) |a| longtime_allocator.destroy(a);
 
                             return Connection.none;
                         }

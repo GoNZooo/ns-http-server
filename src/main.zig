@@ -23,7 +23,7 @@ const debug_prints = false;
 pub const log_level = .info;
 
 const Connection = union(enum) {
-    none: void,
+    idle: void,
     receiving: ReceivingState,
     sending: SendingState,
 };
@@ -84,7 +84,7 @@ const SendingState = struct {
                 .{ self.endpoint, self.static_path, timestamp_in_ms },
             );
             try self.deinit(socket_set);
-            return Connection.none;
+            return Connection.idle;
         } else {
             self.position += read_bytes;
 
@@ -243,7 +243,7 @@ fn handleConnection(
     var maybe_socket: ?Socket = switch (connection.*) {
         .receiving => |receiving| receiving.socket,
         .sending => |sending| sending.socket,
-        .none => null,
+        .idle => null,
     };
 
     if (maybe_socket) |s| {
@@ -251,7 +251,7 @@ fn handleConnection(
             s.close();
             socket_set.remove(s);
 
-            return Connection.none;
+            return Connection.idle;
         }
     }
 
@@ -263,7 +263,7 @@ fn handleConnection(
                 socket_set.remove(receiving.socket);
                 receiving.socket.close();
 
-                return Connection.none;
+                return Connection.idle;
             } else if (socket_set.isReadyRead(receiving.socket)) {
                 var lda: ?*testing.LeakCountAllocator = null;
                 if (memory_debug) {
@@ -288,7 +288,7 @@ fn handleConnection(
                     socket.close();
                     socket_set.remove(socket);
 
-                    return Connection.none;
+                    return Connection.idle;
                 };
 
                 const request = parsing.Request.fromSlice(
@@ -310,7 +310,7 @@ fn handleConnection(
                             };
                             socket.close();
 
-                            return Connection.none;
+                            return Connection.idle;
                         },
                         error.InvalidCharacter,
                         error.UnableToParseConnectionStatus,
@@ -344,7 +344,7 @@ fn handleConnection(
                             };
                             socket.close();
 
-                            return Connection.none;
+                            return Connection.idle;
                         },
                         error.Overflow => {
                             log.err(
@@ -361,7 +361,7 @@ fn handleConnection(
                             };
                             socket.close();
 
-                            return Connection.none;
+                            return Connection.idle;
                         },
                     }
                 };
@@ -394,7 +394,7 @@ fn handleConnection(
                                 longtime_allocator.destroy(arena);
                                 if (lda) |a| longtime_allocator.destroy(a);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
                         }
                     };
@@ -428,7 +428,7 @@ fn handleConnection(
 
                                 break :connection_info string;
                             },
-                            .none => "None\n",
+                            .idle => "Idle\n",
                         };
                         content = mem.concat(
                             stack_allocator,
@@ -464,7 +464,7 @@ fn handleConnection(
                     longtime_allocator.destroy(arena);
                     if (lda) |a| longtime_allocator.destroy(a);
 
-                    return Connection.none;
+                    return Connection.idle;
                 } else if (request.request_line.method == .get) {
                     const static_path = mem.concat(
                         request_arena_allocator,
@@ -492,7 +492,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
                         }
                     };
@@ -522,7 +522,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
 
                             error.NameTooLong => {
@@ -541,7 +541,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
 
                             error.IsDir,
@@ -579,7 +579,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
                         }
                     };
@@ -602,7 +602,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
                             error.SystemResources, error.Unexpected => {
                                 _ = socket.send(internal_error_response) catch |send_error| {
@@ -620,7 +620,7 @@ fn handleConnection(
                                 if (lda) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
-                                return Connection.none;
+                                return Connection.idle;
                             },
                         }
                     };
@@ -670,7 +670,7 @@ fn handleConnection(
                             longtime_allocator.destroy(arena);
                             if (lda) |a| longtime_allocator.destroy(a);
 
-                            return Connection.none;
+                            return Connection.idle;
                         }
                     }
 
@@ -697,7 +697,7 @@ fn handleConnection(
                     socket.close();
                     arena.deinit();
 
-                    return Connection.none;
+                    return Connection.idle;
                 }
             }
 
@@ -758,7 +758,7 @@ fn handleConnection(
 
                     try sending.deinit(socket_set);
 
-                    return Connection.none;
+                    return Connection.idle;
                 };
 
                 return next_state;
@@ -766,7 +766,7 @@ fn handleConnection(
                 return connection.*;
             }
         },
-        .none => return Connection.none,
+        .idle => return Connection.idle,
     }
 }
 
@@ -782,7 +782,7 @@ fn insertIntoFirstFree(connections: *ArrayList(Connection), socket: Socket) !voi
 
     for (connections.items) |*connection, i| {
         switch (connection.*) {
-            .none => {
+            .idle => {
                 connection.* = Connection{ .receiving = receiving_state };
                 found_slot = true;
                 break;

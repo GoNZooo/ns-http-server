@@ -428,7 +428,7 @@ fn handleConnection(
 
                                 break :connection_info string;
                             },
-                            .none => "None",
+                            .none => "None\n",
                         };
                         content = mem.concat(
                             stack_allocator,

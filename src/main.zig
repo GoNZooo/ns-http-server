@@ -113,12 +113,14 @@ pub fn main() anyerror!void {
 
     const arguments = try process.argsAlloc(heap.page_allocator);
     const process_name = arguments[0];
-    if (arguments.len < 2) {
-        log.err(.arguments, "Usage: {} <chunk_size>\n", .{process_name});
+    if (arguments.len < 3) {
+        log.err(.arguments, "Usage: {} <chunk_size> <static_root>\n", .{process_name});
 
         process.exit(1);
     }
+
     const chunk_size = try fmt.parseInt(usize, arguments[1], 10);
+    const static_root = arguments[2];
 
     var memory_debug = false;
     for (arguments) |argument| {
@@ -224,6 +226,7 @@ pub fn main() anyerror!void {
                 chunk_size,
                 memory_debug,
                 connections,
+                static_root,
             );
             fixed_buffer_allocator.reset();
         }
@@ -239,6 +242,7 @@ fn handleConnection(
     send_chunk_size: usize,
     memory_debug: bool,
     connections: ArrayList(Connection),
+    static_root: []const u8,
 ) !Connection {
     var maybe_socket: ?Socket = switch (connection.*) {
         .receiving => |receiving| receiving.socket,
@@ -469,7 +473,7 @@ fn handleConnection(
                     const static_path = mem.concat(
                         request_arena_allocator,
                         u8,
-                        &[_][]const u8{ "static/", resource },
+                        &[_][]const u8{ static_root, resource },
                     ) catch |concat_error| {
                         switch (concat_error) {
                             error.OutOfMemory => {

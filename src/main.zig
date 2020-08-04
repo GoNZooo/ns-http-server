@@ -84,6 +84,7 @@ const SendingState = struct {
                 .{ self.endpoint, self.static_path, timestamp_in_ms },
             );
             try self.deinit(socket_set);
+
             return Connection.idle;
         } else {
             self.position += read_bytes;
@@ -132,11 +133,7 @@ pub fn main() anyerror!void {
     }
 
     const endpoint = network.EndPoint{
-        .address = network.Address{
-            .ipv4 = .{
-                .value = [_]u8{ 0, 0, 0, 0 },
-            },
-        },
+        .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
         .port = 80,
     };
 
@@ -233,6 +230,27 @@ pub fn main() anyerror!void {
     }
 }
 
+fn removeFaultedReceivingSocket(receiving: ReceivingState, socket_set: *SocketSet) bool {
+    if (socket_set.isFaulted(receiving.socket)) {
+        socket_set.remove(receiving.socket);
+        receiving.socket.close();
+
+        return true;
+    }
+
+    return false;
+}
+
+fn removeFaultedSendingSocket(sending: *SendingState, socket_set: *SocketSet) !bool {
+    if (socket_set.isFaulted(sending.socket)) {
+        try sending.deinit(socket_set);
+
+        return true;
+    }
+
+    return false;
+}
+
 fn handleConnection(
     connection: *Connection,
     stack_allocator: *mem.Allocator,
@@ -244,20 +262,18 @@ fn handleConnection(
     connections: ArrayList(Connection),
     static_root: []const u8,
 ) !Connection {
-    var maybe_socket: ?Socket = switch (connection.*) {
-        .receiving => |receiving| receiving.socket,
-        .sending => |sending| sending.socket,
-        .idle => null,
+    const socket_is_faulted = switch (connection.*) {
+        .receiving => |receiving| removeFaultedReceivingSocket(receiving, socket_set),
+        .sending => |*sending| removeFaultedSendingSocket(sending, socket_set) catch |e| {
+            switch (e) {
+                // blow up here intentionally, we're running with a leak detecting allocator
+                error.Leak => unreachable,
+            }
+        },
+        .idle => false,
     };
 
-    if (maybe_socket) |s| {
-        if (socket_set.isFaulted(s)) {
-            s.close();
-            socket_set.remove(s);
-
-            return Connection.idle;
-        }
-    }
+    if (socket_is_faulted) return Connection.idle;
 
     switch (connection.*) {
         .receiving => |receiving| {
@@ -789,6 +805,7 @@ fn insertIntoFirstFree(connections: *ArrayList(Connection), socket: Socket) !voi
             .idle => {
                 connection.* = Connection{ .receiving = receiving_state };
                 found_slot = true;
+
                 break;
             },
             .receiving, .sending => {},

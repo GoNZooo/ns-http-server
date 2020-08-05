@@ -718,6 +718,14 @@ fn handleConnection(
 
                     return sending;
                 } else {
+                    _ = socket.send(method_not_allowed_response) catch |send_error| {
+                        log.err(
+                            .parsing,
+                            "{} <== Method not allowed send error: {}\n",
+                            .{ remote_endpoint, send_error },
+                        );
+                    };
+
                     socket_set.remove(socket);
                     socket.close();
                     arena.deinit();
@@ -884,6 +892,13 @@ const bad_request_response =
     \\Content-length: 11
     \\
     \\Bad request
+;
+
+const method_not_allowed_response =
+    \\HTTP/1.1 405 Method Not Allowed
+    \\Content-length: 18
+    \\
+    \\Method not allowed
 ;
 
 const name_too_long_response =

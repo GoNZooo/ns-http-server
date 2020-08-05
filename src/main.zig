@@ -121,7 +121,10 @@ pub fn main() anyerror!void {
     }
 
     const chunk_size = try fmt.parseInt(usize, arguments[1], 10);
-    const static_root = arguments[2];
+    const static_root = if (!mem.endsWith(u8, arguments[2], "/"))
+        try mem.concat(heap.page_allocator, u8, &[_][]const u8{ arguments[2], "/" })
+    else
+        try heap.page_allocator.dupe(u8, arguments[2]);
 
     var memory_debug = false;
     for (arguments) |argument| {
@@ -131,6 +134,8 @@ pub fn main() anyerror!void {
             break;
         }
     }
+
+    process.argsFree(heap.page_allocator, arguments);
 
     const endpoint = network.EndPoint{
         .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },

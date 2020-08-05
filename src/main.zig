@@ -716,6 +716,10 @@ fn handleConnection(
                     socket_set.remove(socket);
                     socket.close();
                     arena.deinit();
+                    longtime_allocator.destroy(arena);
+                    if (lda) |a| {
+                        longtime_allocator.destroy(a);
+                    }
 
                     return Connection.idle;
                 }

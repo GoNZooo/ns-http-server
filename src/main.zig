@@ -720,11 +720,17 @@ fn handleConnection(
                 } else {
                     _ = socket.send(method_not_allowed_response) catch |send_error| {
                         log.err(
-                            .parsing,
+                            .send,
                             "{} <== Method not allowed send error: {}\n",
                             .{ remote_endpoint, send_error },
                         );
                     };
+
+                    log.info(
+                        .response,
+                        "{} <== 405 Method Not Allowed: {}\n",
+                        .{ remote_endpoint, request.request_line.method },
+                    );
 
                     socket_set.remove(socket);
                     socket.close();

@@ -139,6 +139,14 @@ pub fn main() anyerror!void {
 
     process.argsFree(heap.page_allocator, arguments);
 
+    var random_bytes: [8]u8 = undefined;
+    try std.crypto.randomBytes(random_bytes[0..]);
+    const seed = mem.readIntLittle(u64, random_bytes[0..8]);
+    var r = std.rand.DefaultCsprng.init(seed);
+
+    const shutdown_key = r.random.int(u128);
+    log.info(.shutdown, "Shutdown key is: {}\n", .{shutdown_key});
+
     const endpoint = network.EndPoint{
         .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
         .port = port,
@@ -161,7 +169,9 @@ pub fn main() anyerror!void {
     var request_stack_allocator = &fixed_buffer_allocator.allocator;
     var logging_allocator = heap.loggingAllocator(heap.page_allocator, std.io.getStdOut().writer());
 
-    while (true) {
+    var running = true;
+
+    while (running) {
         _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {
             if (builtin.os.tag == .windows) {
                 switch (e) {
@@ -231,8 +241,23 @@ pub fn main() anyerror!void {
                 memory_debug,
                 connections,
                 static_root,
+                shutdown_key,
+                &running,
             );
             fixed_buffer_allocator.reset();
+        }
+    }
+
+    for (connections.items) |*connection| {
+        switch (connection.*) {
+            .idle => {},
+            .receiving => |receiving| {
+                receiving.socket.close();
+            },
+            .sending => |*sending| {
+                sending.socket.close();
+                try sending.deinit(&socket_set);
+            },
         }
     }
 }
@@ -268,6 +293,8 @@ fn handleConnection(
     memory_debug: bool,
     connections: ArrayList(Connection),
     static_root: []const u8,
+    shutdown_key: u128,
+    running: *bool,
 ) !Connection {
     const socket_is_faulted = switch (connection.*) {
         .receiving => |receiving| removeFaultedReceivingSocket(receiving, socket_set),
@@ -719,6 +746,62 @@ fn handleConnection(
                     };
 
                     return sending;
+                } else if (request.request_line.method == .post and
+                    mem.eql(u8, request.request_line.resourceSlice(), "/exit"))
+                {
+                    const body_value = fmt.parseUnsigned(
+                        u128,
+                        request.body,
+                        10,
+                    ) catch |parse_error| {
+                        switch (parse_error) {
+                            error.Overflow, error.InvalidCharacter => {
+                                _ = socket.send(bad_request_response) catch |send_error| {
+                                    log.err(
+                                        .send,
+                                        "Exit Bad Request send error: {}\n",
+                                        .{send_error},
+                                    );
+                                };
+
+                                log.err(
+                                    .shutdown_key_parsing,
+                                    "{} <== 400 Bad Request ({})\n",
+                                    .{ remote_endpoint, parse_error },
+                                );
+
+                                socket_set.remove(socket);
+                                socket.close();
+                                arena.deinit();
+                                longtime_allocator.destroy(arena);
+                                if (lda) |a| {
+                                    longtime_allocator.destroy(a);
+                                }
+
+                                return Connection.idle;
+                            },
+                        }
+                    };
+                    if (body_value == shutdown_key) {
+                        running.* = false;
+                    } else {
+                        _ = socket.send(bad_request_response) catch |send_error| {
+                            log.err(
+                                .send,
+                                "Exit code bad, Bad Request send error: {}\n",
+                                .{send_error},
+                            );
+                        };
+                    }
+                    socket_set.remove(socket);
+                    socket.close();
+                    arena.deinit();
+                    longtime_allocator.destroy(arena);
+                    if (lda) |a| {
+                        longtime_allocator.destroy(a);
+                    }
+
+                    return Connection.idle;
                 } else {
                     _ = socket.send(method_not_allowed_response) catch |send_error| {
                         log.err(

@@ -319,13 +319,17 @@ fn handleConnection(
 
                 return Connection.idle;
             } else if (socket_set.isReadyRead(receiving.socket)) {
-                var lda: ?*testing.LeakCountAllocator = null;
+                var leak_detecting_allocator: ?*testing.LeakCountAllocator = null;
                 if (memory_debug) {
-                    lda = try longtime_allocator.create(testing.LeakCountAllocator);
-                    lda.?.* = testing.LeakCountAllocator.init(longtime_allocator);
+                    leak_detecting_allocator = try longtime_allocator.create(
+                        testing.LeakCountAllocator,
+                    );
+                    leak_detecting_allocator.?.* = testing.LeakCountAllocator.init(
+                        longtime_allocator,
+                    );
                 }
                 var arena = try longtime_allocator.create(heap.ArenaAllocator);
-                if (lda) |l| {
+                if (leak_detecting_allocator) |l| {
                     arena.* = heap.ArenaAllocator.init(&l.allocator);
                 } else {
                     arena.* = heap.ArenaAllocator.init(longtime_allocator);
@@ -351,7 +355,7 @@ fn handleConnection(
                 ) catch |parsing_error| {
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| longtime_allocator.destroy(a);
+                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                     socket_set.remove(socket);
                     switch (parsing_error) {
                         error.OutOfMemory => {
@@ -421,7 +425,10 @@ fn handleConnection(
                 };
 
                 const resource_slice = request.request_line.resourceSlice()[1..];
-                const resource = if (mem.eql(u8, resource_slice, "")) "index.html" else resource_slice;
+                const resource = if (mem.eql(u8, resource_slice, ""))
+                    "index.html"
+                else
+                    resource_slice;
 
                 if (request.request_line.method == .get and mem.eql(u8, resource, "diagnostics")) {
                     const content_format =
@@ -446,7 +453,7 @@ fn handleConnection(
                                 socket_set.remove(socket);
                                 arena.deinit();
                                 longtime_allocator.destroy(arena);
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
                                 return Connection.idle;
                             },
@@ -506,7 +513,11 @@ fn handleConnection(
                         \\
                         \\{}
                     ;
-                    const response = try fmt.allocPrint(stack_allocator, format, .{ content.len, content });
+                    const response = try fmt.allocPrint(
+                        stack_allocator,
+                        format,
+                        .{ content.len, content },
+                    );
 
                     _ = socket.send(response) catch |send_error| {
                         log.err(.diagnostics, "=== Diagnostics send error: {}\n", .{send_error});
@@ -516,7 +527,7 @@ fn handleConnection(
                     socket_set.remove(socket);
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| longtime_allocator.destroy(a);
+                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
                     return Connection.idle;
                 } else if (request.request_line.method == .get) {
@@ -543,7 +554,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -573,7 +584,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -592,7 +603,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -630,7 +641,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -653,7 +664,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -671,7 +682,7 @@ fn handleConnection(
                                 socket.close();
                                 socket_set.remove(socket);
                                 arena.deinit();
-                                if (lda) |a| longtime_allocator.destroy(a);
+                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                                 longtime_allocator.destroy(arena);
 
                                 return Connection.idle;
@@ -722,7 +733,7 @@ fn handleConnection(
                             socket_set.remove(socket);
                             arena.deinit();
                             longtime_allocator.destroy(arena);
-                            if (lda) |a| longtime_allocator.destroy(a);
+                            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
                             return Connection.idle;
                         }
@@ -740,7 +751,7 @@ fn handleConnection(
                             .static_path = static_path,
                             .request = request,
                             .start_timestamp = timestamp,
-                            .leak_detecting_allocator = lda,
+                            .leak_detecting_allocator = leak_detecting_allocator,
                             .longtime_allocator = longtime_allocator,
                         },
                     };
@@ -774,7 +785,7 @@ fn handleConnection(
                                 socket.close();
                                 arena.deinit();
                                 longtime_allocator.destroy(arena);
-                                if (lda) |a| {
+                                if (leak_detecting_allocator) |a| {
                                     longtime_allocator.destroy(a);
                                 }
 
@@ -797,7 +808,7 @@ fn handleConnection(
                     socket.close();
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| {
+                    if (leak_detecting_allocator) |a| {
                         longtime_allocator.destroy(a);
                     }
 
@@ -821,7 +832,7 @@ fn handleConnection(
                     socket.close();
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (lda) |a| {
+                    if (leak_detecting_allocator) |a| {
                         longtime_allocator.destroy(a);
                     }
 

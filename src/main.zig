@@ -114,17 +114,19 @@ pub fn main() anyerror!void {
 
     const arguments = try process.argsAlloc(heap.page_allocator);
     const process_name = arguments[0];
-    if (arguments.len < 3) {
-        log.err(.arguments, "Usage: {} <chunk_size> <static_root>\n", .{process_name});
+    if (arguments.len < 4) {
+        log.err(.arguments, "Usage: {} <port> <chunk_size> <static_root>\n", .{process_name});
 
         process.exit(1);
     }
 
-    const chunk_size = try fmt.parseInt(usize, arguments[1], 10);
-    const static_root = if (!mem.endsWith(u8, arguments[2], "/"))
-        try mem.concat(heap.page_allocator, u8, &[_][]const u8{ arguments[2], "/" })
+    const port = try fmt.parseInt(u16, arguments[1], 10);
+    const chunk_size = try fmt.parseInt(usize, arguments[2], 10);
+    const static_root_argument = arguments[3];
+    const static_root = if (!mem.endsWith(u8, static_root_argument, "/"))
+        try mem.concat(heap.page_allocator, u8, &[_][]const u8{ static_root_argument, "/" })
     else
-        try heap.page_allocator.dupe(u8, arguments[2]);
+        try heap.page_allocator.dupe(u8, static_root_argument);
 
     var memory_debug = false;
     for (arguments) |argument| {
@@ -139,7 +141,7 @@ pub fn main() anyerror!void {
 
     const endpoint = network.EndPoint{
         .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
-        .port = 80,
+        .port = port,
     };
 
     const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);

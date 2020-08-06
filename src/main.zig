@@ -145,8 +145,6 @@ pub fn main() anyerror!void {
     };
 
     const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
-    var socket_set = try SocketSet.init(heap.page_allocator);
-    defer socket_set.deinit();
     var connections = ArrayList(Connection).init(heap.page_allocator);
     try socket.bind(endpoint);
     try socket.listen();
@@ -154,6 +152,8 @@ pub fn main() anyerror!void {
     if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
         try socket.enablePortReuse(true);
     }
+    var socket_set = try SocketSet.init(heap.page_allocator);
+    defer socket_set.deinit();
     try socket_set.add(socket, .{ .read = true, .write = true });
 
     var memory_buffer: [max_stack_file_read_size]u8 = undefined;

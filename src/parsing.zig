@@ -106,7 +106,7 @@ pub const Header = union(enum) {
     etag: ETag,
     host: []const u8,
     origin: ?Origin,
-    referer: []const u8,
+    referrer: []const u8,
     upgrade_insecure_requests: u32,
     user_agent: []const u8,
     if_none_match: []const u8,
@@ -157,9 +157,9 @@ pub const Header = union(enum) {
 
                 return Header{ .if_none_match = if_none_match };
             } else if (mem.eql(u8, header_name, "referer")) {
-                const referer = header_value;
+                const referrer = header_value;
 
-                return Header{ .referer = referer };
+                return Header{ .referrer = referrer };
             } else if (mem.eql(u8, header_name, "x-forwarded-for")) {
                 const forwards = header_value;
 
@@ -316,11 +316,11 @@ pub const CacheControl = union(enum) {
             } else if (mem.eql(u8, slice, "max-stale")) {
                 return CacheControl{ .max_stale = null };
             } else {
-                return error.UnableToparseCacheControlValue;
+                return error.UnableToParseCacheControlValue;
             }
         }
 
-        return error.UnableToparseCacheControlHeader;
+        return error.UnableToParseCacheControlHeader;
     }
 };
 

@@ -372,8 +372,8 @@ fn handleConnection(
                         },
                         error.InvalidCharacter,
                         error.UnableToParseConnectionStatus,
-                        error.UnableToparseCacheControlValue,
-                        error.UnableToparseCacheControlHeader,
+                        error.UnableToParseCacheControlValue,
+                        error.UnableToParseCacheControlHeader,
                         error.UnableToParseWeakETagValue,
                         error.UnableToParseNormalETagValue,
                         error.UnableToParseETag,
@@ -540,7 +540,7 @@ fn handleConnection(
                             error.OutOfMemory => {
                                 log.err(
                                     .static_path,
-                                    "=== OOM while concatting static path: {}\n",
+                                    "=== OOM while concatenating static path: {}\n",
                                     .{resource},
                                 );
                                 _ = socket.send(high_load_response) catch |send_error| {

@@ -309,8 +309,8 @@ fn handleConnection(
 
     if (socket_is_faulted) return Connection.idle;
 
-    switch (connection.*) {
-        .receiving => |receiving| return try handleReceiving(
+    return switch (connection.*) {
+        .receiving => |receiving| try handleReceiving(
             receiving,
             connection,
             longtime_allocator,
@@ -323,69 +323,85 @@ fn handleConnection(
             memory_debug,
         ),
 
-        .sending => |*sending| {
-            const socket = sending.socket;
-            if (socket_set.isReadyWrite(socket)) {
-                if (!sending.headers_sent) {
-                    _ = socket.send("HTTP/1.1 200 OK\n") catch unreachable;
-                    var header_buffer = try stack_allocator.alloc(u8, 128);
-                    const etag_header = try fmt.bufPrint(header_buffer, "ETag: {}\n", .{sending.etag});
-                    _ = socket.send(etag_header) catch unreachable;
-                    const content_type_header = try fmt.bufPrint(
-                        header_buffer,
-                        "Content-type: {}\n",
-                        .{determineContentType(sending.static_path)},
+        .sending => |*sending| try handleSending(
+            sending,
+            connection,
+            socket_set,
+            longtime_allocator,
+            stack_allocator,
+            send_chunk_size,
+        ),
+        .idle => Connection.idle,
+    };
+}
+
+fn handleSending(
+    sending: *SendingState,
+    connection: *Connection,
+    socket_set: *SocketSet,
+    longtime_allocator: *mem.Allocator,
+    stack_allocator: *mem.Allocator,
+    send_chunk_size: usize,
+) !Connection {
+    const socket = sending.socket;
+    if (socket_set.isReadyWrite(socket)) {
+        if (!sending.headers_sent) {
+            _ = socket.send("HTTP/1.1 200 OK\n") catch unreachable;
+            var header_buffer = try stack_allocator.alloc(u8, 128);
+            const etag_header = try fmt.bufPrint(header_buffer, "ETag: {}\n", .{sending.etag});
+            _ = socket.send(etag_header) catch unreachable;
+            const content_type_header = try fmt.bufPrint(
+                header_buffer,
+                "Content-type: {}\n",
+                .{determineContentType(sending.static_path)},
+            );
+            _ = socket.send(content_type_header) catch unreachable;
+            _ = socket.send("\n") catch unreachable;
+
+            sending.headers_sent = true;
+        }
+        const next_state = sending.sendChunk(
+            stack_allocator,
+            socket_set,
+            send_chunk_size,
+        ) catch |e| new_state: {
+            switch (e) {
+                error.OutOfMemory => {
+                    log.err(.send, "OOM!\n", .{});
+                },
+                error.Leak => unreachable,
+                error.ConnectionTimedOut,
+                error.ConnectionResetByPeer,
+                error.BrokenPipe,
+                error.OperationAborted,
+                => {
+                    log.err(
+                        .send,
+                        "Broken pipe / ConnectionResetByPeer sending to {}\n",
+                        .{sending.endpoint},
                     );
-                    _ = socket.send(content_type_header) catch unreachable;
-                    _ = socket.send("\n") catch unreachable;
-
-                    sending.headers_sent = true;
-                }
-                const next_state = sending.sendChunk(
-                    stack_allocator,
-                    socket_set,
-                    send_chunk_size,
-                ) catch |e| new_state: {
-                    switch (e) {
-                        error.OutOfMemory => {
-                            log.err(.send, "OOM!\n", .{});
-                        },
-                        error.Leak => unreachable,
-                        error.ConnectionTimedOut,
-                        error.ConnectionResetByPeer,
-                        error.BrokenPipe,
-                        error.OperationAborted,
-                        => {
-                            log.err(
-                                .send,
-                                "Broken pipe / ConnectionResetByPeer sending to {}\n",
-                                .{sending.endpoint},
-                            );
-                        },
-                        error.IsDir,
-                        error.AccessDenied,
-                        error.WouldBlock,
-                        error.FastOpenAlreadyInProgress,
-                        error.MessageTooBig,
-                        error.SystemResources,
-                        error.InputOutput,
-                        error.Unexpected,
-                        => {
-                            debug.panic("odd error: {}\n", .{e});
-                        },
-                    }
-
-                    try sending.deinit(socket_set);
-
-                    return Connection.idle;
-                };
-
-                return next_state;
-            } else {
-                return connection.*;
+                },
+                error.IsDir,
+                error.AccessDenied,
+                error.WouldBlock,
+                error.FastOpenAlreadyInProgress,
+                error.MessageTooBig,
+                error.SystemResources,
+                error.InputOutput,
+                error.Unexpected,
+                => {
+                    debug.panic("odd error: {}\n", .{e});
+                },
             }
-        },
-        .idle => return Connection.idle,
+
+            try sending.deinit(socket_set);
+
+            return Connection.idle;
+        };
+
+        return next_state;
+    } else {
+        return connection.*;
     }
 }
 

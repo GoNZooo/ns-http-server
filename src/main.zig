@@ -310,538 +310,18 @@ fn handleConnection(
     if (socket_is_faulted) return Connection.idle;
 
     switch (connection.*) {
-        .receiving => |receiving| {
-            const timestamp = std.time.nanoTimestamp();
-
-            if ((timestamp - receiving.start_timestamp) > 30_000_000_000) {
-                socket_set.remove(receiving.socket);
-                receiving.socket.close();
-
-                return Connection.idle;
-            } else if (socket_set.isReadyRead(receiving.socket)) {
-                var leak_detecting_allocator: ?*testing.LeakCountAllocator = null;
-                if (memory_debug) {
-                    leak_detecting_allocator = try longtime_allocator.create(
-                        testing.LeakCountAllocator,
-                    );
-                    leak_detecting_allocator.?.* = testing.LeakCountAllocator.init(
-                        longtime_allocator,
-                    );
-                }
-                var arena = try longtime_allocator.create(heap.ArenaAllocator);
-                if (leak_detecting_allocator) |l| {
-                    arena.* = heap.ArenaAllocator.init(&l.allocator);
-                } else {
-                    arena.* = heap.ArenaAllocator.init(longtime_allocator);
-                }
-                errdefer arena.deinit();
-                var request_arena_allocator = &arena.allocator;
-
-                const remote_endpoint = receiving.endpoint;
-                const socket = receiving.socket;
-                var buffer = try stack_allocator.alloc(u8, 2056);
-                var received = socket.receive(buffer[0..]) catch |e| {
-                    log.err(.receive, "=== receive error 1 ===\n", .{});
-
-                    socket.close();
-                    socket_set.remove(socket);
-
-                    return Connection.idle;
-                };
-
-                const request = parsing.Request.fromSlice(
-                    request_arena_allocator,
-                    buffer[0..received],
-                ) catch |parsing_error| {
-                    arena.deinit();
-                    longtime_allocator.destroy(arena);
-                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                    socket_set.remove(socket);
-                    switch (parsing_error) {
-                        error.OutOfMemory => {
-                            _ = socket.send(high_load_response) catch |send_error| {
-                                log.err(
-                                    .parsing,
-                                    "{} <== OOM error send error: {}\n",
-                                    .{ remote_endpoint, send_error },
-                                );
-                            };
-                            socket.close();
-
-                            return Connection.idle;
-                        },
-                        error.InvalidCharacter,
-                        error.UnableToParseConnectionStatus,
-                        error.UnableToParseCacheControlValue,
-                        error.UnableToParseCacheControlHeader,
-                        error.UnableToParseWeakETagValue,
-                        error.UnableToParseNormalETagValue,
-                        error.UnableToParseETag,
-                        error.UnableToParseCrossOriginResourcePolicy,
-                        error.UnableToParseMethod,
-                        error.UnableToParseAllowCredentials,
-                        error.UnableToParseScheme,
-                        error.UnableToParseOriginScheme,
-                        error.UnableToFindHeaderSeparator,
-                        error.UnableToParseVersion,
-                        error.NoVersionGiven,
-                        error.NoResourceGiven,
-                        error.NoMethodGiven,
-                        => {
-                            log.err(
-                                .parsing,
-                                "{} <== 400 Bad Request: {}\n",
-                                .{ remote_endpoint, parsing_error },
-                            );
-                            _ = socket.send(bad_request_response) catch |send_error| {
-                                log.err(
-                                    .parsing,
-                                    "{} <== 400 Bad Request send error\n",
-                                    .{remote_endpoint},
-                                );
-                            };
-                            socket.close();
-
-                            return Connection.idle;
-                        },
-                        error.Overflow => {
-                            log.err(
-                                .parsing,
-                                "{} <== 500 Internal error: Overflow\n",
-                                .{remote_endpoint},
-                            );
-                            _ = socket.send(internal_error_response) catch |send_error| {
-                                log.err(
-                                    .parsing,
-                                    "{} <== 500 Internal error send error: {}\n",
-                                    .{ remote_endpoint, send_error },
-                                );
-                            };
-                            socket.close();
-
-                            return Connection.idle;
-                        },
-                    }
-                };
-
-                const resource_slice = request.request_line.resourceSlice()[1..];
-                const resource = if (mem.eql(u8, resource_slice, ""))
-                    "index.html"
-                else
-                    resource_slice;
-
-                if (request.request_line.method == .get and mem.eql(u8, resource, "diagnostics")) {
-                    const content_format =
-                        \\Connections: {}
-                        \\
-                    ;
-
-                    var content = fmt.allocPrint(
-                        stack_allocator,
-                        content_format,
-                        .{connections.items.len},
-                    ) catch |alloc_print_error| {
-                        switch (alloc_print_error) {
-                            error.OutOfMemory => {
-                                log.err(
-                                    .diagnostics,
-                                    "Unable to allocate memory for diagnostics content.\n",
-                                    .{},
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                longtime_allocator.destroy(arena);
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-
-                                return Connection.idle;
-                            },
-                        }
-                    };
-                    for (connections.items) |c| {
-                        const connection_info = switch (c) {
-                            .receiving => |r| try fmt.allocPrint(
-                                stack_allocator,
-                                "R: {}\n",
-                                .{r.endpoint},
-                            ),
-                            .sending => |s| connection_info: {
-                                var string = try fmt.allocPrint(
-                                    stack_allocator,
-                                    "S: {} => {}\n",
-                                    .{ s.static_path, s.endpoint },
-                                );
-                                for (s.request.headers.items) |h| {
-                                    string = try mem.concat(
-                                        stack_allocator,
-                                        u8,
-                                        &[_][]const u8{
-                                            string,
-                                            try fmt.allocPrint(stack_allocator, "\t{}\n", .{h}),
-                                        },
-                                    );
-                                }
-                                string = try mem.concat(stack_allocator, u8, &[_][]const u8{
-                                    string,
-                                    try fmt.allocPrint(stack_allocator, "\t{}\n", .{s.request.body}),
-                                });
-
-                                break :connection_info string;
-                            },
-                            .idle => "Idle\n",
-                        };
-                        content = mem.concat(
-                            stack_allocator,
-                            u8,
-                            &[_][]const u8{ content, connection_info },
-                        ) catch |concat_error| content: {
-                            log.err(
-                                .diagnostics,
-                                "Concat error while adding '{}'\n",
-                                .{connection_info},
-                            );
-
-                            break :content content;
-                        };
-                    }
-
-                    const format =
-                        \\HTTP/1.1 200 OK
-                        \\Content-length: {}
-                        \\Content-type: text/plain
-                        \\
-                        \\{}
-                    ;
-                    const response = try fmt.allocPrint(
-                        stack_allocator,
-                        format,
-                        .{ content.len, content },
-                    );
-
-                    _ = socket.send(response) catch |send_error| {
-                        log.err(.diagnostics, "=== Diagnostics send error: {}\n", .{send_error});
-                    };
-
-                    socket.close();
-                    socket_set.remove(socket);
-                    arena.deinit();
-                    longtime_allocator.destroy(arena);
-                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-
-                    return Connection.idle;
-                } else if (request.request_line.method == .get) {
-                    const static_path = mem.concat(
-                        request_arena_allocator,
-                        u8,
-                        &[_][]const u8{ static_root, resource },
-                    ) catch |concat_error| {
-                        switch (concat_error) {
-                            error.OutOfMemory => {
-                                log.err(
-                                    .static_path,
-                                    "=== OOM while concatenating static path: {}\n",
-                                    .{resource},
-                                );
-                                _ = socket.send(high_load_response) catch |send_error| {
-                                    log.err(
-                                        .static_path,
-                                        "=== High load / OOM send error: {}\n",
-                                        .{send_error},
-                                    );
-                                };
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-                        }
-                    };
-                    errdefer request_arena_allocator.free(static_path);
-
-                    log.info(
-                        .request,
-                        "{} ==> {} {}\n",
-                        .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
-                    );
-
-                    const file = fs.cwd().openFile(static_path, .{}) catch |e| {
-                        switch (e) {
-                            error.FileNotFound => {
-                                _ = socket.send(not_found_response) catch |send_error| {
-                                    log.err(.send, "=== send error 404 {} ===\n", .{send_error});
-                                };
-                                log.err(
-                                    .file,
-                                    "{} <== 404 ({})\n",
-                                    .{ remote_endpoint, static_path },
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-
-                            error.NameTooLong => {
-                                _ = socket.send(name_too_long_response) catch |send_error| {
-                                    log.err(.send, "=== send error 500 {} ===\n", .{send_error});
-                                };
-                                log.err(
-                                    .file,
-                                    "{} <== 400 (Name too long, {})\n",
-                                    .{ remote_endpoint, static_path },
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-
-                            error.IsDir,
-                            error.SystemResources,
-                            error.WouldBlock,
-                            error.FileTooBig,
-                            error.AccessDenied,
-                            error.Unexpected,
-                            error.SharingViolation,
-                            error.PathAlreadyExists,
-                            error.PipeBusy,
-                            error.InvalidUtf8,
-                            error.BadPathName,
-                            error.SymLinkLoop,
-                            error.ProcessFdQuotaExceeded,
-                            error.SystemFdQuotaExceeded,
-                            error.NoDevice,
-                            error.NoSpaceLeft,
-                            error.NotDir,
-                            error.DeviceBusy,
-                            error.FileLocksNotSupported,
-                            => {
-                                _ = socket.send(internal_error_response) catch |send_error| {
-                                    log.err(.send, "=== send error 500: {} ===\n", .{send_error});
-                                };
-                                log.err(
-                                    .unexpected,
-                                    "{} <== 500 ({}) ({})\n",
-                                    .{ remote_endpoint, static_path, e },
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-                        }
-                    };
-
-                    const stat = file.stat() catch |stat_error| {
-                        switch (stat_error) {
-                            error.AccessDenied => {
-                                _ = socket.send(not_found_response) catch |send_error| {
-                                    log.err(.send, "=== send error 404 {} ===\n", .{send_error});
-                                };
-                                log.err(
-                                    .stat,
-                                    "{} <== 404 ({})\n",
-                                    .{ remote_endpoint, static_path },
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-                            error.SystemResources, error.Unexpected => {
-                                _ = socket.send(internal_error_response) catch |send_error| {
-                                    log.err(.send, "=== send error 500: {} ===\n", .{send_error});
-                                };
-                                log.err(
-                                    .stat,
-                                    "{} <== 500 ({}) ({})\n",
-                                    .{ remote_endpoint, static_path, stat_error },
-                                );
-
-                                socket.close();
-                                socket_set.remove(socket);
-                                arena.deinit();
-                                if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-                                longtime_allocator.destroy(arena);
-
-                                return Connection.idle;
-                            },
-                        }
-                    };
-                    const last_modification_time = stat.mtime;
-                    const expected_file_size = stat.size;
-
-                    const hash_function = std.hash_map.getAutoHashFn(@TypeOf(last_modification_time));
-                    const etag = hash_function(last_modification_time);
-                    var if_none_match_request_header: ?parsing.Header = null;
-                    for (request.headers.items) |h| {
-                        switch (h) {
-                            .if_none_match => |d| if_none_match_request_header = h,
-                            else => {},
-                        }
-                    }
-                    if (if_none_match_request_header) |h| {
-                        const etag_value = fmt.parseInt(
-                            u32,
-                            h.if_none_match,
-                            10,
-                        ) catch |e| etag_value: {
-                            log.err(
-                                .etag,
-                                "|== Unable to hash incoming etag value: {}\n",
-                                .{h.if_none_match},
-                            );
-
-                            break :etag_value 0;
-                        };
-                        if (etag_value == etag) {
-                            log.info(
-                                .response,
-                                "{} <== {} (304 via ETag)\n",
-                                .{ remote_endpoint, static_path },
-                            );
-                            _ = socket.send(not_modified_response) catch |send_error| {
-                                log.err(
-                                    .etag,
-                                    "{} <== 304 not modified send error: {}\n",
-                                    .{ remote_endpoint, send_error },
-                                );
-                            };
-
-                            socket.close();
-                            socket_set.remove(socket);
-                            arena.deinit();
-                            longtime_allocator.destroy(arena);
-                            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
-
-                            return Connection.idle;
-                        }
-                    }
-
-                    const sending = Connection{
-                        .sending = SendingState{
-                            .socket = socket,
-                            .file = file,
-                            .file_length = expected_file_size,
-                            .position = 0,
-                            .etag = etag,
-                            .endpoint = remote_endpoint,
-                            .arena = arena,
-                            .static_path = static_path,
-                            .request = request,
-                            .start_timestamp = timestamp,
-                            .leak_detecting_allocator = leak_detecting_allocator,
-                            .longtime_allocator = longtime_allocator,
-                        },
-                    };
-
-                    return sending;
-                } else if (request.request_line.method == .post and
-                    mem.eql(u8, request.request_line.resourceSlice(), "/exit"))
-                {
-                    const body_value = fmt.parseUnsigned(
-                        u128,
-                        request.body,
-                        10,
-                    ) catch |parse_error| {
-                        switch (parse_error) {
-                            error.Overflow, error.InvalidCharacter => {
-                                _ = socket.send(bad_request_response) catch |send_error| {
-                                    log.err(
-                                        .send,
-                                        "Exit Bad Request send error: {}\n",
-                                        .{send_error},
-                                    );
-                                };
-
-                                log.err(
-                                    .shutdown_key_parsing,
-                                    "{} <== 400 Bad Request ({})\n",
-                                    .{ remote_endpoint, parse_error },
-                                );
-
-                                socket_set.remove(socket);
-                                socket.close();
-                                arena.deinit();
-                                longtime_allocator.destroy(arena);
-                                if (leak_detecting_allocator) |a| {
-                                    longtime_allocator.destroy(a);
-                                }
-
-                                return Connection.idle;
-                            },
-                        }
-                    };
-                    if (body_value == shutdown_key) {
-                        running.* = false;
-                    } else {
-                        _ = socket.send(bad_request_response) catch |send_error| {
-                            log.err(
-                                .send,
-                                "Exit code bad, Bad Request send error: {}\n",
-                                .{send_error},
-                            );
-                        };
-                    }
-                    socket_set.remove(socket);
-                    socket.close();
-                    arena.deinit();
-                    longtime_allocator.destroy(arena);
-                    if (leak_detecting_allocator) |a| {
-                        longtime_allocator.destroy(a);
-                    }
-
-                    return Connection.idle;
-                } else {
-                    _ = socket.send(method_not_allowed_response) catch |send_error| {
-                        log.err(
-                            .send,
-                            "{} <== Method not allowed send error: {}\n",
-                            .{ remote_endpoint, send_error },
-                        );
-                    };
-
-                    log.info(
-                        .response,
-                        "{} <== 405 Method Not Allowed: {}\n",
-                        .{ remote_endpoint, request.request_line.method },
-                    );
-
-                    socket_set.remove(socket);
-                    socket.close();
-                    arena.deinit();
-                    longtime_allocator.destroy(arena);
-                    if (leak_detecting_allocator) |a| {
-                        longtime_allocator.destroy(a);
-                    }
-
-                    return Connection.idle;
-                }
-            }
-
-            return connection.*;
-        },
+        .receiving => |receiving| return try handleReceiving(
+            receiving,
+            connection,
+            longtime_allocator,
+            stack_allocator,
+            socket_set,
+            connections,
+            static_root,
+            shutdown_key,
+            running,
+            memory_debug,
+        ),
 
         .sending => |*sending| {
             const socket = sending.socket;
@@ -907,6 +387,550 @@ fn handleConnection(
         },
         .idle => return Connection.idle,
     }
+}
+
+fn handleReceiving(
+    receiving: ReceivingState,
+    connection: *Connection,
+    longtime_allocator: *mem.Allocator,
+    stack_allocator: *mem.Allocator,
+    socket_set: *SocketSet,
+    connections: ArrayList(Connection),
+    static_root: []const u8,
+    shutdown_key: u128,
+    running: *bool,
+    memory_debug: bool,
+) !Connection {
+    const timestamp = std.time.nanoTimestamp();
+
+    if ((timestamp - receiving.start_timestamp) > 30_000_000_000) {
+        socket_set.remove(receiving.socket);
+        receiving.socket.close();
+
+        return Connection.idle;
+    } else if (socket_set.isReadyRead(receiving.socket)) {
+        var leak_detecting_allocator: ?*testing.LeakCountAllocator = null;
+        if (memory_debug) {
+            leak_detecting_allocator = try longtime_allocator.create(
+                testing.LeakCountAllocator,
+            );
+            leak_detecting_allocator.?.* = testing.LeakCountAllocator.init(
+                longtime_allocator,
+            );
+        }
+        var arena = try longtime_allocator.create(heap.ArenaAllocator);
+        if (leak_detecting_allocator) |l| {
+            arena.* = heap.ArenaAllocator.init(&l.allocator);
+        } else {
+            arena.* = heap.ArenaAllocator.init(longtime_allocator);
+        }
+        errdefer arena.deinit();
+        var request_arena_allocator = &arena.allocator;
+
+        const remote_endpoint = receiving.endpoint;
+        const socket = receiving.socket;
+        var buffer = try stack_allocator.alloc(u8, 2056);
+        var received = socket.receive(buffer[0..]) catch |e| {
+            log.err(.receive, "=== receive error 1 ===\n", .{});
+
+            socket.close();
+            socket_set.remove(socket);
+
+            return Connection.idle;
+        };
+
+        const request = parsing.Request.fromSlice(
+            request_arena_allocator,
+            buffer[0..received],
+        ) catch |parsing_error| {
+            arena.deinit();
+            longtime_allocator.destroy(arena);
+            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+            socket_set.remove(socket);
+            switch (parsing_error) {
+                error.OutOfMemory => {
+                    _ = socket.send(high_load_response) catch |send_error| {
+                        log.err(
+                            .parsing,
+                            "{} <== OOM error send error: {}\n",
+                            .{ remote_endpoint, send_error },
+                        );
+                    };
+                    socket.close();
+
+                    return Connection.idle;
+                },
+                error.InvalidCharacter,
+                error.UnableToParseConnectionStatus,
+                error.UnableToParseCacheControlValue,
+                error.UnableToParseCacheControlHeader,
+                error.UnableToParseWeakETagValue,
+                error.UnableToParseNormalETagValue,
+                error.UnableToParseETag,
+                error.UnableToParseCrossOriginResourcePolicy,
+                error.UnableToParseMethod,
+                error.UnableToParseAllowCredentials,
+                error.UnableToParseScheme,
+                error.UnableToParseOriginScheme,
+                error.UnableToFindHeaderSeparator,
+                error.UnableToParseVersion,
+                error.NoVersionGiven,
+                error.NoResourceGiven,
+                error.NoMethodGiven,
+                => {
+                    log.err(
+                        .parsing,
+                        "{} <== 400 Bad Request: {}\n",
+                        .{ remote_endpoint, parsing_error },
+                    );
+                    _ = socket.send(bad_request_response) catch |send_error| {
+                        log.err(
+                            .parsing,
+                            "{} <== 400 Bad Request send error\n",
+                            .{remote_endpoint},
+                        );
+                    };
+                    socket.close();
+
+                    return Connection.idle;
+                },
+                error.Overflow => {
+                    log.err(
+                        .parsing,
+                        "{} <== 500 Internal error: Overflow\n",
+                        .{remote_endpoint},
+                    );
+                    _ = socket.send(internal_error_response) catch |send_error| {
+                        log.err(
+                            .parsing,
+                            "{} <== 500 Internal error send error: {}\n",
+                            .{ remote_endpoint, send_error },
+                        );
+                    };
+                    socket.close();
+
+                    return Connection.idle;
+                },
+            }
+        };
+
+        const resource_slice = request.request_line.resourceSlice()[1..];
+        const resource = if (mem.eql(u8, resource_slice, ""))
+            "index.html"
+        else
+            resource_slice;
+
+        if (request.request_line.method == .get and mem.eql(u8, resource, "diagnostics")) {
+            const content_format =
+                \\Connections: {}
+                \\
+            ;
+
+            var content = fmt.allocPrint(
+                stack_allocator,
+                content_format,
+                .{connections.items.len},
+            ) catch |alloc_print_error| {
+                switch (alloc_print_error) {
+                    error.OutOfMemory => {
+                        log.err(
+                            .diagnostics,
+                            "Unable to allocate memory for diagnostics content.\n",
+                            .{},
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        longtime_allocator.destroy(arena);
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+
+                        return Connection.idle;
+                    },
+                }
+            };
+            for (connections.items) |c| {
+                const connection_info = switch (c) {
+                    .receiving => |r| try fmt.allocPrint(
+                        stack_allocator,
+                        "R: {}\n",
+                        .{r.endpoint},
+                    ),
+                    .sending => |s| connection_info: {
+                        var string = try fmt.allocPrint(
+                            stack_allocator,
+                            "S: {} => {}\n",
+                            .{ s.static_path, s.endpoint },
+                        );
+                        for (s.request.headers.items) |h| {
+                            string = try mem.concat(
+                                stack_allocator,
+                                u8,
+                                &[_][]const u8{
+                                    string,
+                                    try fmt.allocPrint(stack_allocator, "\t{}\n", .{h}),
+                                },
+                            );
+                        }
+                        string = try mem.concat(stack_allocator, u8, &[_][]const u8{
+                            string,
+                            try fmt.allocPrint(stack_allocator, "\t{}\n", .{s.request.body}),
+                        });
+
+                        break :connection_info string;
+                    },
+                    .idle => "Idle\n",
+                };
+                content = mem.concat(
+                    stack_allocator,
+                    u8,
+                    &[_][]const u8{ content, connection_info },
+                ) catch |concat_error| content: {
+                    log.err(
+                        .diagnostics,
+                        "Concat error while adding '{}'\n",
+                        .{connection_info},
+                    );
+
+                    break :content content;
+                };
+            }
+
+            const format =
+                \\HTTP/1.1 200 OK
+                \\Content-length: {}
+                \\Content-type: text/plain
+                \\
+                \\{}
+            ;
+            const response = try fmt.allocPrint(
+                stack_allocator,
+                format,
+                .{ content.len, content },
+            );
+
+            _ = socket.send(response) catch |send_error| {
+                log.err(.diagnostics, "=== Diagnostics send error: {}\n", .{send_error});
+            };
+
+            socket.close();
+            socket_set.remove(socket);
+            arena.deinit();
+            longtime_allocator.destroy(arena);
+            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+
+            return Connection.idle;
+        } else if (request.request_line.method == .get) {
+            const static_path = mem.concat(
+                request_arena_allocator,
+                u8,
+                &[_][]const u8{ static_root, resource },
+            ) catch |concat_error| {
+                switch (concat_error) {
+                    error.OutOfMemory => {
+                        log.err(
+                            .static_path,
+                            "=== OOM while concatenating static path: {}\n",
+                            .{resource},
+                        );
+                        _ = socket.send(high_load_response) catch |send_error| {
+                            log.err(
+                                .static_path,
+                                "=== High load / OOM send error: {}\n",
+                                .{send_error},
+                            );
+                        };
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+                }
+            };
+            errdefer request_arena_allocator.free(static_path);
+
+            log.info(
+                .request,
+                "{} ==> {} {}\n",
+                .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
+            );
+
+            const file = fs.cwd().openFile(static_path, .{}) catch |e| {
+                switch (e) {
+                    error.FileNotFound => {
+                        _ = socket.send(not_found_response) catch |send_error| {
+                            log.err(.send, "=== send error 404 {} ===\n", .{send_error});
+                        };
+                        log.err(
+                            .file,
+                            "{} <== 404 ({})\n",
+                            .{ remote_endpoint, static_path },
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+
+                    error.NameTooLong => {
+                        _ = socket.send(name_too_long_response) catch |send_error| {
+                            log.err(.send, "=== send error 500 {} ===\n", .{send_error});
+                        };
+                        log.err(
+                            .file,
+                            "{} <== 400 (Name too long, {})\n",
+                            .{ remote_endpoint, static_path },
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+
+                    error.IsDir,
+                    error.SystemResources,
+                    error.WouldBlock,
+                    error.FileTooBig,
+                    error.AccessDenied,
+                    error.Unexpected,
+                    error.SharingViolation,
+                    error.PathAlreadyExists,
+                    error.PipeBusy,
+                    error.InvalidUtf8,
+                    error.BadPathName,
+                    error.SymLinkLoop,
+                    error.ProcessFdQuotaExceeded,
+                    error.SystemFdQuotaExceeded,
+                    error.NoDevice,
+                    error.NoSpaceLeft,
+                    error.NotDir,
+                    error.DeviceBusy,
+                    error.FileLocksNotSupported,
+                    => {
+                        _ = socket.send(internal_error_response) catch |send_error| {
+                            log.err(.send, "=== send error 500: {} ===\n", .{send_error});
+                        };
+                        log.err(
+                            .unexpected,
+                            "{} <== 500 ({}) ({})\n",
+                            .{ remote_endpoint, static_path, e },
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+                }
+            };
+
+            const stat = file.stat() catch |stat_error| {
+                switch (stat_error) {
+                    error.AccessDenied => {
+                        _ = socket.send(not_found_response) catch |send_error| {
+                            log.err(.send, "=== send error 404 {} ===\n", .{send_error});
+                        };
+                        log.err(
+                            .stat,
+                            "{} <== 404 ({})\n",
+                            .{ remote_endpoint, static_path },
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+                    error.SystemResources, error.Unexpected => {
+                        _ = socket.send(internal_error_response) catch |send_error| {
+                            log.err(.send, "=== send error 500: {} ===\n", .{send_error});
+                        };
+                        log.err(
+                            .stat,
+                            "{} <== 500 ({}) ({})\n",
+                            .{ remote_endpoint, static_path, stat_error },
+                        );
+
+                        socket.close();
+                        socket_set.remove(socket);
+                        arena.deinit();
+                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+                        longtime_allocator.destroy(arena);
+
+                        return Connection.idle;
+                    },
+                }
+            };
+            const last_modification_time = stat.mtime;
+            const expected_file_size = stat.size;
+
+            const hash_function = std.hash_map.getAutoHashFn(@TypeOf(last_modification_time));
+            const etag = hash_function(last_modification_time);
+            var if_none_match_request_header: ?parsing.Header = null;
+            for (request.headers.items) |h| {
+                switch (h) {
+                    .if_none_match => |d| if_none_match_request_header = h,
+                    else => {},
+                }
+            }
+            if (if_none_match_request_header) |h| {
+                const etag_value = fmt.parseInt(
+                    u32,
+                    h.if_none_match,
+                    10,
+                ) catch |e| etag_value: {
+                    log.err(
+                        .etag,
+                        "|== Unable to hash incoming etag value: {}\n",
+                        .{h.if_none_match},
+                    );
+
+                    break :etag_value 0;
+                };
+                if (etag_value == etag) {
+                    log.info(
+                        .response,
+                        "{} <== {} (304 via ETag)\n",
+                        .{ remote_endpoint, static_path },
+                    );
+                    _ = socket.send(not_modified_response) catch |send_error| {
+                        log.err(
+                            .etag,
+                            "{} <== 304 not modified send error: {}\n",
+                            .{ remote_endpoint, send_error },
+                        );
+                    };
+
+                    socket.close();
+                    socket_set.remove(socket);
+                    arena.deinit();
+                    longtime_allocator.destroy(arena);
+                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
+
+                    return Connection.idle;
+                }
+            }
+
+            const sending = Connection{
+                .sending = SendingState{
+                    .socket = socket,
+                    .file = file,
+                    .file_length = expected_file_size,
+                    .position = 0,
+                    .etag = etag,
+                    .endpoint = remote_endpoint,
+                    .arena = arena,
+                    .static_path = static_path,
+                    .request = request,
+                    .start_timestamp = timestamp,
+                    .leak_detecting_allocator = leak_detecting_allocator,
+                    .longtime_allocator = longtime_allocator,
+                },
+            };
+
+            return sending;
+        } else if (request.request_line.method == .post and
+            mem.eql(u8, request.request_line.resourceSlice(), "/exit"))
+        {
+            const body_value = fmt.parseUnsigned(
+                u128,
+                request.body,
+                10,
+            ) catch |parse_error| {
+                switch (parse_error) {
+                    error.Overflow, error.InvalidCharacter => {
+                        _ = socket.send(bad_request_response) catch |send_error| {
+                            log.err(
+                                .send,
+                                "Exit Bad Request send error: {}\n",
+                                .{send_error},
+                            );
+                        };
+
+                        log.err(
+                            .shutdown_key_parsing,
+                            "{} <== 400 Bad Request ({})\n",
+                            .{ remote_endpoint, parse_error },
+                        );
+
+                        socket_set.remove(socket);
+                        socket.close();
+                        arena.deinit();
+                        longtime_allocator.destroy(arena);
+                        if (leak_detecting_allocator) |a| {
+                            longtime_allocator.destroy(a);
+                        }
+
+                        return Connection.idle;
+                    },
+                }
+            };
+            if (body_value == shutdown_key) {
+                running.* = false;
+            } else {
+                _ = socket.send(bad_request_response) catch |send_error| {
+                    log.err(
+                        .send,
+                        "Exit code bad, Bad Request send error: {}\n",
+                        .{send_error},
+                    );
+                };
+            }
+            socket_set.remove(socket);
+            socket.close();
+            arena.deinit();
+            longtime_allocator.destroy(arena);
+            if (leak_detecting_allocator) |a| {
+                longtime_allocator.destroy(a);
+            }
+
+            return Connection.idle;
+        } else {
+            _ = socket.send(method_not_allowed_response) catch |send_error| {
+                log.err(
+                    .send,
+                    "{} <== Method not allowed send error: {}\n",
+                    .{ remote_endpoint, send_error },
+                );
+            };
+
+            log.info(
+                .response,
+                "{} <== 405 Method Not Allowed: {}\n",
+                .{ remote_endpoint, request.request_line.method },
+            );
+
+            socket_set.remove(socket);
+            socket.close();
+            arena.deinit();
+            longtime_allocator.destroy(arena);
+            if (leak_detecting_allocator) |a| {
+                longtime_allocator.destroy(a);
+            }
+
+            return Connection.idle;
+        }
+    }
+
+    return connection.*;
 }
 
 fn insertIntoFirstFree(connections: *ArrayList(Connection), socket: Socket) !void {

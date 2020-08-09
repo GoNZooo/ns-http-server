@@ -115,7 +115,11 @@ pub fn main() anyerror!void {
     const arguments = try process.argsAlloc(heap.page_allocator);
     const process_name = arguments[0];
     if (arguments.len < 4) {
-        log.err(.arguments, "Usage: {} <port> <chunk_size> <static_root>\n", .{process_name});
+        log.err(
+            .arguments,
+            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE]\n",
+            .{process_name},
+        );
 
         process.exit(1);
     }
@@ -129,11 +133,18 @@ pub fn main() anyerror!void {
         try heap.page_allocator.dupe(u8, static_root_argument);
 
     var memory_debug = false;
+
     for (arguments) |argument| {
         if (mem.eql(u8, argument, "memory-debug")) {
             memory_debug = true;
 
             break;
+        } else if (mem.startsWith(u8, argument, "uid=")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |uid_value| {
+                try setUid(try fmt.parseUnsigned(u32, uid_value, 10));
+            }
         }
     }
 
@@ -259,6 +270,12 @@ pub fn main() anyerror!void {
                 try sending.deinit(&socket_set);
             },
         }
+    }
+}
+
+fn setUid(id: u32) !void {
+    if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
+        try std.os.setuid(id);
     }
 }
 

@@ -17,6 +17,7 @@ const ArrayList = std.ArrayList;
 const Socket = network.Socket;
 const SocketSet = network.SocketSet;
 const EndPoint = network.EndPoint;
+const BlockList = @import("./blocklist.zig").BlockList;
 
 const debug_prints = false;
 
@@ -133,6 +134,7 @@ pub fn main() anyerror!void {
         try heap.page_allocator.dupe(u8, static_root_argument);
 
     var memory_debug = false;
+    var blockList: ?BlockList = null;
 
     for (arguments) |argument| {
         if (mem.eql(u8, argument, "memory-debug")) {
@@ -144,6 +146,13 @@ pub fn main() anyerror!void {
             _ = it.next();
             if (it.next()) |uid_value| {
                 try setUid(try fmt.parseUnsigned(u32, uid_value, 10));
+            }
+        } else if (mem.startsWith(u8, argument, "blocklist")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |filename| {
+                const blockListSlice = try fs.cwd().readFileAlloc(heap.page_allocator, filename, 1_000_000);
+                blockList = try BlockList.fromSlice(heap.page_allocator, blockListSlice);
             }
         }
     }
@@ -226,9 +235,13 @@ pub fn main() anyerror!void {
                     },
                 }
             };
-
-            try socket_set.add(client_socket, .{ .read = true, .write = true });
-            try insertIntoFirstFree(&connections, client_socket);
+            const remote_endpoint = try client_socket.getRemoteEndPoint();
+            if (blockList == null or !blockList.?.isBlocked(remote_endpoint.address.ipv4)) {
+                try socket_set.add(client_socket, .{ .read = true, .write = true });
+                try insertIntoFirstFree(&connections, client_socket, remote_endpoint);
+            } else {
+                log.info(.blocklist, "Blocked connection from: {}\n", .{remote_endpoint});
+            }
         }
 
         const local_endpoint = try socket.getLocalEndPoint();
@@ -966,10 +979,13 @@ fn handleReceiving(
     return connection.*;
 }
 
-fn insertIntoFirstFree(connections: *ArrayList(Connection), socket: Socket) !void {
+fn insertIntoFirstFree(
+    connections: *ArrayList(Connection),
+    socket: Socket,
+    endpoint: EndPoint,
+) !void {
     const timestamp = std.time.nanoTimestamp();
     var found_slot = false;
-    const endpoint = try socket.getRemoteEndPoint();
     const receiving_state = ReceivingState{
         .socket = socket,
         .endpoint = endpoint,

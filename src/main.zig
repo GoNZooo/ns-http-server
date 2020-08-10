@@ -240,6 +240,7 @@ pub fn main() anyerror!void {
                 try socket_set.add(client_socket, .{ .read = true, .write = true });
                 try insertIntoFirstFree(&connections, client_socket, remote_endpoint);
             } else {
+                client_socket.close();
                 log.info(.blocklist, "Blocked connection from: {}\n", .{remote_endpoint});
             }
         }

@@ -182,6 +182,7 @@ pub fn main() anyerror!void {
     var logging_allocator = heap.loggingAllocator(heap.page_allocator, std.io.getStdOut().writer());
 
     var running = true;
+    const local_endpoint = try socket.getLocalEndPoint();
 
     while (running) {
         _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {

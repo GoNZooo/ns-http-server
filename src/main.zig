@@ -51,7 +51,6 @@ const SendingState = struct {
     headers_sent: bool = false,
 
     longtime_allocator: *mem.Allocator,
-    leak_detecting_allocator: ?*testing.LeakCountAllocator = null,
 
     pub fn sendChunk(
         self: *Self,
@@ -80,11 +79,10 @@ const SendingState = struct {
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - self.start_timestamp) / 1_000_000.0;
             log.info(
-                .send,
-                "{} <== {} ({d:.3} ms)\n",
+                "{} <== {} ({d:.3} ms)",
                 .{ self.endpoint, self.static_path, timestamp_in_ms },
             );
-            try self.deinit(socket_set);
+            self.deinit(socket_set);
 
             return Connection.idle;
         } else {
@@ -94,14 +92,9 @@ const SendingState = struct {
         }
     }
 
-    pub fn deinit(self: *Self, socket_set: *SocketSet) !void {
+    pub fn deinit(self: *Self, socket_set: *SocketSet) void {
         // self.request.deinit();
         self.arena.deinit();
-        if (self.leak_detecting_allocator) |lda| {
-            try lda.validate();
-            self.longtime_allocator.destroy(lda);
-        }
-
         self.longtime_allocator.destroy(self.arena);
         self.socket.close();
         self.file.close();
@@ -117,8 +110,7 @@ pub fn main() anyerror!void {
     const process_name = arguments[0];
     if (arguments.len < 4) {
         log.err(
-            .arguments,
-            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE]\n",
+            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE]",
             .{process_name},
         );
 
@@ -165,7 +157,7 @@ pub fn main() anyerror!void {
     var r = std.rand.DefaultCsprng.init(seed);
 
     const shutdown_key = r.random.int(u128);
-    log.info(.shutdown, "Shutdown key is: {}\n", .{shutdown_key});
+    log.info("Shutdown key is: {}", .{shutdown_key});
 
     const endpoint = network.EndPoint{
         .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
@@ -196,9 +188,9 @@ pub fn main() anyerror!void {
             if (builtin.os.tag == .windows) {
                 switch (e) {
                     error.FileDescriptorNotASocket => {
-                        debug.print("===== ERROR socket_set={}\n", .{socket_set});
+                        debug.print("===== ERROR socket_set={}", .{socket_set});
                         for (connections.items) |connection, i| {
-                            debug.print("===== ERROR connection{}={}\n", .{ i, connection });
+                            debug.print("===== ERROR connection{}={}", .{ i, connection });
                         }
                         process.exit(1);
                     },
@@ -216,7 +208,7 @@ pub fn main() anyerror!void {
             const client_socket = socket.accept() catch |e| {
                 switch (e) {
                     error.ConnectionAborted => {
-                        log.err(.accept, "Client aborted connection\n", .{});
+                        log.err("Client aborted connection", .{});
 
                         continue;
                     },
@@ -241,7 +233,7 @@ pub fn main() anyerror!void {
                 try insertIntoFirstFree(&connections, client_socket, remote_endpoint);
             } else {
                 client_socket.close();
-                log.info(.blocklist, "Blocked connection from: {}\n", .{remote_endpoint});
+                log.info("Blocked connection from: {}", .{remote_endpoint});
             }
         }
 
@@ -281,7 +273,7 @@ pub fn main() anyerror!void {
             },
             .sending => |*sending| {
                 sending.socket.close();
-                try sending.deinit(&socket_set);
+                sending.deinit(&socket_set);
             },
         }
     }
@@ -306,7 +298,7 @@ fn removeFaultedReceivingSocket(receiving: ReceivingState, socket_set: *SocketSe
 
 fn removeFaultedSendingSocket(sending: *SendingState, socket_set: *SocketSet) !bool {
     if (socket_set.isFaulted(sending.socket)) {
-        try sending.deinit(socket_set);
+        sending.deinit(socket_set);
 
         return true;
     }
@@ -395,20 +387,18 @@ fn handleSending(
             stack_allocator,
             socket_set,
             send_chunk_size,
-        ) catch |e| new_state: {
+        ) catch |e| {
             switch (e) {
                 error.OutOfMemory => {
-                    log.err(.send, "OOM!\n", .{});
+                    log.err("OOM!", .{});
                 },
-                error.Leak => unreachable,
                 error.ConnectionTimedOut,
                 error.ConnectionResetByPeer,
                 error.BrokenPipe,
                 error.OperationAborted,
                 => {
                     log.err(
-                        .send,
-                        "Broken pipe / ConnectionResetByPeer sending to {}\n",
+                        "Broken pipe / ConnectionResetByPeer sending to {}",
                         .{sending.endpoint},
                     );
                 },
@@ -425,7 +415,7 @@ fn handleSending(
                 },
             }
 
-            try sending.deinit(socket_set);
+            sending.deinit(socket_set);
 
             return Connection.idle;
         };
@@ -456,21 +446,8 @@ fn handleReceiving(
 
         return Connection.idle;
     } else if (socket_set.isReadyRead(receiving.socket)) {
-        var leak_detecting_allocator: ?*testing.LeakCountAllocator = null;
-        if (memory_debug) {
-            leak_detecting_allocator = try longtime_allocator.create(
-                testing.LeakCountAllocator,
-            );
-            leak_detecting_allocator.?.* = testing.LeakCountAllocator.init(
-                longtime_allocator,
-            );
-        }
         var arena = try longtime_allocator.create(heap.ArenaAllocator);
-        if (leak_detecting_allocator) |l| {
-            arena.* = heap.ArenaAllocator.init(&l.allocator);
-        } else {
-            arena.* = heap.ArenaAllocator.init(longtime_allocator);
-        }
+        arena.* = heap.ArenaAllocator.init(longtime_allocator);
         errdefer arena.deinit();
         var request_arena_allocator = &arena.allocator;
 
@@ -478,7 +455,7 @@ fn handleReceiving(
         const socket = receiving.socket;
         var buffer = try stack_allocator.alloc(u8, 2056);
         var received = socket.receive(buffer[0..]) catch |e| {
-            log.err(.receive, "=== receive error 1 ===\n", .{});
+            log.err("=== receive error 1 ===", .{});
 
             socket.close();
             socket_set.remove(socket);
@@ -492,14 +469,12 @@ fn handleReceiving(
         ) catch |parsing_error| {
             arena.deinit();
             longtime_allocator.destroy(arena);
-            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
             socket_set.remove(socket);
             switch (parsing_error) {
                 error.OutOfMemory => {
                     _ = socket.send(high_load_response) catch |send_error| {
                         log.err(
-                            .parsing,
-                            "{} <== OOM error send error: {}\n",
+                            "{} <== OOM error send error: {}",
                             .{ remote_endpoint, send_error },
                         );
                     };
@@ -526,14 +501,12 @@ fn handleReceiving(
                 error.NoMethodGiven,
                 => {
                     log.err(
-                        .parsing,
-                        "{} <== 400 Bad Request: {}\n",
+                        "{} <== 400 Bad Request: {}",
                         .{ remote_endpoint, parsing_error },
                     );
                     _ = socket.send(bad_request_response) catch |send_error| {
                         log.err(
-                            .parsing,
-                            "{} <== 400 Bad Request send error\n",
+                            "{} <== 400 Bad Request send error",
                             .{remote_endpoint},
                         );
                     };
@@ -543,14 +516,12 @@ fn handleReceiving(
                 },
                 error.Overflow => {
                     log.err(
-                        .parsing,
-                        "{} <== 500 Internal error: Overflow\n",
+                        "{} <== 500 Internal error: Overflow",
                         .{remote_endpoint},
                     );
                     _ = socket.send(internal_error_response) catch |send_error| {
                         log.err(
-                            .parsing,
-                            "{} <== 500 Internal error send error: {}\n",
+                            "{} <== 500 Internal error send error: {}",
                             .{ remote_endpoint, send_error },
                         );
                     };
@@ -581,8 +552,7 @@ fn handleReceiving(
                 switch (alloc_print_error) {
                     error.OutOfMemory => {
                         log.err(
-                            .diagnostics,
-                            "Unable to allocate memory for diagnostics content.\n",
+                            "Unable to allocate memory for diagnostics content.",
                             .{},
                         );
 
@@ -590,7 +560,6 @@ fn handleReceiving(
                         socket_set.remove(socket);
                         arena.deinit();
                         longtime_allocator.destroy(arena);
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
                         return Connection.idle;
                     },
@@ -634,8 +603,7 @@ fn handleReceiving(
                     &[_][]const u8{ content, connection_info },
                 ) catch |concat_error| content: {
                     log.err(
-                        .diagnostics,
-                        "Concat error while adding '{}'\n",
+                        "Concat error while adding '{}'",
                         .{connection_info},
                     );
 
@@ -657,14 +625,13 @@ fn handleReceiving(
             );
 
             _ = socket.send(response) catch |send_error| {
-                log.err(.diagnostics, "=== Diagnostics send error: {}\n", .{send_error});
+                log.err("=== Diagnostics send error: {}", .{send_error});
             };
 
             socket.close();
             socket_set.remove(socket);
             arena.deinit();
             longtime_allocator.destroy(arena);
-            if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
             return Connection.idle;
         } else if (request.request_line.method == .get) {
@@ -676,13 +643,11 @@ fn handleReceiving(
                 switch (concat_error) {
                     error.OutOfMemory => {
                         log.err(
-                            .static_path,
-                            "=== OOM while concatenating static path: {}\n",
+                            "=== OOM while concatenating static path: {}",
                             .{resource},
                         );
                         _ = socket.send(high_load_response) catch |send_error| {
                             log.err(
-                                .static_path,
                                 "=== High load / OOM send error: {}\n",
                                 .{send_error},
                             );
@@ -691,7 +656,6 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
@@ -701,8 +665,7 @@ fn handleReceiving(
             errdefer request_arena_allocator.free(static_path);
 
             log.info(
-                .request,
-                "{} ==> {} {}\n",
+                "{} ==> {} {}",
                 .{ remote_endpoint, request.request_line.method.toSlice(), static_path },
             );
 
@@ -710,18 +673,16 @@ fn handleReceiving(
                 switch (e) {
                     error.FileNotFound => {
                         _ = socket.send(not_found_response) catch |send_error| {
-                            log.err(.send, "=== send error 404 {} ===\n", .{send_error});
+                            log.err("=== send error 404 {} ===", .{send_error});
                         };
                         log.err(
-                            .file,
-                            "{} <== 404 ({})\n",
+                            "{} <== 404 ({})",
                             .{ remote_endpoint, static_path },
                         );
 
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
@@ -729,18 +690,16 @@ fn handleReceiving(
 
                     error.NameTooLong => {
                         _ = socket.send(name_too_long_response) catch |send_error| {
-                            log.err(.send, "=== send error 500 {} ===\n", .{send_error});
+                            log.err("=== send error 500 {} ===", .{send_error});
                         };
                         log.err(
-                            .file,
-                            "{} <== 400 (Name too long, {})\n",
+                            "{} <== 400 (Name too long, {})",
                             .{ remote_endpoint, static_path },
                         );
 
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
@@ -767,18 +726,16 @@ fn handleReceiving(
                     error.FileLocksNotSupported,
                     => {
                         _ = socket.send(internal_error_response) catch |send_error| {
-                            log.err(.send, "=== send error 500: {} ===\n", .{send_error});
+                            log.err("=== send error 500: {} ===", .{send_error});
                         };
                         log.err(
-                            .unexpected,
-                            "{} <== 500 ({}) ({})\n",
+                            "{} <== 500 ({}) ({})",
                             .{ remote_endpoint, static_path, e },
                         );
 
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
@@ -790,36 +747,32 @@ fn handleReceiving(
                 switch (stat_error) {
                     error.AccessDenied => {
                         _ = socket.send(not_found_response) catch |send_error| {
-                            log.err(.send, "=== send error 404 {} ===\n", .{send_error});
+                            log.err("=== send error 404 {} ===", .{send_error});
                         };
                         log.err(
-                            .stat,
-                            "{} <== 404 ({})\n",
+                            "{} <== 404 ({})",
                             .{ remote_endpoint, static_path },
                         );
 
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
                     error.SystemResources, error.Unexpected => {
                         _ = socket.send(internal_error_response) catch |send_error| {
-                            log.err(.send, "=== send error 500: {} ===\n", .{send_error});
+                            log.err("=== send error 500: {} ===", .{send_error});
                         };
                         log.err(
-                            .stat,
-                            "{} <== 500 ({}) ({})\n",
+                            "{} <== 500 ({}) ({})",
                             .{ remote_endpoint, static_path, stat_error },
                         );
 
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
                         longtime_allocator.destroy(arena);
 
                         return Connection.idle;
@@ -845,8 +798,7 @@ fn handleReceiving(
                     10,
                 ) catch |e| etag_value: {
                     log.err(
-                        .etag,
-                        "|== Unable to hash incoming etag value: {}\n",
+                        "|== Unable to hash incoming etag value: {}",
                         .{h.if_none_match},
                     );
 
@@ -854,14 +806,12 @@ fn handleReceiving(
                 };
                 if (etag_value == etag) {
                     log.info(
-                        .response,
-                        "{} <== {} (304 via ETag)\n",
+                        "{} <== {} (304 via ETag)",
                         .{ remote_endpoint, static_path },
                     );
                     _ = socket.send(not_modified_response) catch |send_error| {
                         log.err(
-                            .etag,
-                            "{} <== 304 not modified send error: {}\n",
+                            "{} <== 304 not modified send error: {}",
                             .{ remote_endpoint, send_error },
                         );
                     };
@@ -870,7 +820,6 @@ fn handleReceiving(
                     socket_set.remove(socket);
                     arena.deinit();
                     longtime_allocator.destroy(arena);
-                    if (leak_detecting_allocator) |a| longtime_allocator.destroy(a);
 
                     return Connection.idle;
                 }
@@ -888,7 +837,6 @@ fn handleReceiving(
                     .static_path = static_path,
                     .request = request,
                     .start_timestamp = timestamp,
-                    .leak_detecting_allocator = leak_detecting_allocator,
                     .longtime_allocator = longtime_allocator,
                 },
             };
@@ -906,15 +854,13 @@ fn handleReceiving(
                     error.Overflow, error.InvalidCharacter => {
                         _ = socket.send(bad_request_response) catch |send_error| {
                             log.err(
-                                .send,
-                                "Exit Bad Request send error: {}\n",
+                                "Exit Bad Request send error: {}",
                                 .{send_error},
                             );
                         };
 
                         log.err(
-                            .shutdown_key_parsing,
-                            "{} <== 400 Bad Request ({})\n",
+                            "{} <== 400 Bad Request ({})",
                             .{ remote_endpoint, parse_error },
                         );
 
@@ -922,9 +868,6 @@ fn handleReceiving(
                         socket.close();
                         arena.deinit();
                         longtime_allocator.destroy(arena);
-                        if (leak_detecting_allocator) |a| {
-                            longtime_allocator.destroy(a);
-                        }
 
                         return Connection.idle;
                     },
@@ -935,8 +878,7 @@ fn handleReceiving(
             } else {
                 _ = socket.send(bad_request_response) catch |send_error| {
                     log.err(
-                        .send,
-                        "Exit code bad, Bad Request send error: {}\n",
+                        "Exit code bad, Bad Request send error: {}",
                         .{send_error},
                     );
                 };
@@ -945,23 +887,18 @@ fn handleReceiving(
             socket.close();
             arena.deinit();
             longtime_allocator.destroy(arena);
-            if (leak_detecting_allocator) |a| {
-                longtime_allocator.destroy(a);
-            }
 
             return Connection.idle;
         } else {
             _ = socket.send(method_not_allowed_response) catch |send_error| {
                 log.err(
-                    .send,
-                    "{} <== Method not allowed send error: {}\n",
+                    "{} <== Method not allowed send error: {}",
                     .{ remote_endpoint, send_error },
                 );
             };
 
             log.info(
-                .response,
-                "{} <== 405 Method Not Allowed: {}\n",
+                "{} <== 405 Method Not Allowed: {}",
                 .{ remote_endpoint, request.request_line.method },
             );
 
@@ -969,9 +906,6 @@ fn handleReceiving(
             socket.close();
             arena.deinit();
             longtime_allocator.destroy(arena);
-            if (leak_detecting_allocator) |a| {
-                longtime_allocator.destroy(a);
-            }
 
             return Connection.idle;
         }

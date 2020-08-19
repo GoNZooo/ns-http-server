@@ -228,7 +228,23 @@ pub fn main() anyerror!void {
                     },
                 }
             };
-            const remote_endpoint = try client_socket.getRemoteEndPoint();
+
+            const remote_endpoint = client_socket.getRemoteEndPoint() catch |endpoint_error| {
+                log.err("=== Unable to get client endpoint: {} ===", .{endpoint_error});
+
+                switch (endpoint_error) {
+                    error.UnsupportedAddressFamily,
+                    error.Unexpected,
+                    error.InsufficientBytes,
+                    error.SystemResources,
+                    => {
+                        client_socket.close();
+
+                        continue;
+                    },
+                    error.NotConnected => continue,
+                }
+            };
             if (blockList == null or !blockList.?.isBlocked(remote_endpoint.address.ipv4)) {
                 try socket_set.add(client_socket, .{ .read = true, .write = true });
                 try insertIntoFirstFree(&connections, client_socket, remote_endpoint);

@@ -110,7 +110,7 @@ pub fn main() anyerror!void {
     const process_name = arguments[0];
     if (arguments.len < 4) {
         log.err(
-            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE]",
+            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE] [blocklist=FILEPATH]",
             .{process_name},
         );
 

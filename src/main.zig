@@ -246,15 +246,45 @@ pub fn main() anyerror!void {
                 }
             };
             if (blockList == null or !blockList.?.isBlocked(remote_endpoint.address.ipv4)) {
-                try socket_set.add(client_socket, .{ .read = true, .write = true });
-                try insertIntoFirstFree(&connections, client_socket, remote_endpoint);
+                socket_set.add(
+                    client_socket,
+                    .{ .read = true, .write = true },
+                ) catch |socket_add_error| {
+                    switch (socket_add_error) {
+                        error.OutOfMemory => {
+                            log.err(
+                                "=== OOM when trying to add socket in socket_set: {} ===",
+                                .{remote_endpoint},
+                            );
+
+                            client_socket.close();
+
+                            continue;
+                        },
+                    }
+                };
+                insertIntoFirstFree(
+                    &connections,
+                    client_socket,
+                    remote_endpoint,
+                ) catch |insert_connection_error| {
+                    switch (insert_connection_error) {
+                        error.OutOfMemory => {
+                            log.err(
+                                "=== OOM when trying to add connection: {} ===",
+                                .{remote_endpoint},
+                            );
+                            client_socket.close();
+
+                            continue;
+                        },
+                    }
+                };
             } else {
                 client_socket.close();
                 log.info("Blocked connection from: {}", .{remote_endpoint});
             }
         }
-
-        const local_endpoint = try socket.getLocalEndPoint();
 
         if (debug_prints) {
             debug.print("===== connections.capacity={}\n", .{connections.capacity});

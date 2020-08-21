@@ -19,9 +19,17 @@ pub fn build(b: *Builder) void {
     exe.setBuildMode(mode);
     exe.install();
 
+    const tests = b.addTest("src/blocklist.zig");
+    tests.addPackagePath("network", "dependencies/zig-network/network.zig");
+    tests.setTarget(target);
+    tests.setBuildMode(mode);
+
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&tests.step);
 }

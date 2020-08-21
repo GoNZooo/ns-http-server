@@ -46,3 +46,13 @@ fn addressFromSlice(slice: []const u8) !IPv4 {
 
     return IPv4{ .value = [_]u8{ v1, v2, v3, v4 } };
 }
+
+test "`addressFromSlice` returns valid IPv4 address from slice" {
+    const expected_address = IPv4{ .value = [_]u8{ 127, 0, 0, 1 } };
+    const address = try addressFromSlice("127.0.0.1");
+    testing.expect(address.eql(expected_address));
+
+    const expected_address2 = IPv4{ .value = [_]u8{ 192, 168, 100, 5 } };
+    const address2 = try addressFromSlice("192.168.100.5");
+    testing.expect(address2.eql(expected_address2));
+}

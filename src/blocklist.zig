@@ -30,21 +30,12 @@ pub const BlockList = struct {
 
     pub fn isBlocked(self: Self, address: IPv4) bool {
         for (self.blocked_addresses.items) |blocked_address| {
-            if (matchingAddresses(address, blocked_address)) {
-                return true;
-            }
+            if (address.eql(blocked_address)) return true;
         }
 
         return false;
     }
 };
-
-fn matchingAddresses(a: IPv4, b: IPv4) bool {
-    return a.value[0] == b.value[0] and
-        a.value[1] == b.value[1] and
-        a.value[2] == b.value[2] and
-        a.value[3] == b.value[3];
-}
 
 fn addressFromSlice(slice: []const u8) !IPv4 {
     var it = mem.split(slice, ".");

@@ -15,6 +15,7 @@ pub const BlockList = struct {
 
     blocked_addresses: ArrayList(IPv4),
 
+    // @TODO: add support for IPv6 as well
     pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Self {
         var blocked_addresses = ArrayList(IPv4).init(allocator);
         var it = mem.split(slice, "\n");

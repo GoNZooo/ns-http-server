@@ -64,17 +64,6 @@ const SendingState = struct {
         const send_buffer = buffer[0..read_bytes];
         var sent_bytes = try self.socket.send(send_buffer);
 
-        // debug.print(
-        //     "send_buffer={}\n\tread_bytes={}\tbuffer.len={}\tsent_bytes={}\tfile.pos={}\n",
-        //     .{
-        //         send_buffer,
-        //         read_bytes,
-        //         buffer.len,
-        //         sent_bytes,
-        //         self.file.getPos() catch unreachable,
-        //     },
-        // );
-
         if (read_bytes < buffer.len) {
             const end_timestamp = std.time.nanoTimestamp();
             const timestamp_in_ms = @intToFloat(f64, end_timestamp - self.start_timestamp) / 1_000_000.0;
@@ -102,54 +91,20 @@ const SendingState = struct {
     }
 };
 
+const Options = struct {
+    port: u16,
+    chunk_size: u16 = 256,
+    static_root: []const u8 = "./static",
+    uid: ?u32 = null,
+    blocklist: ?BlockList = null,
+    memory_debug: bool = false,
+};
+
 pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
 
-    const arguments = try process.argsAlloc(heap.page_allocator);
-    const process_name = arguments[0];
-    if (arguments.len < 4) {
-        log.err(
-            "Usage: {} <port> <chunk_size> <static_root> [uid=UID_VALUE] [blocklist=FILEPATH]",
-            .{process_name},
-        );
-
-        process.exit(1);
-    }
-
-    const port = try fmt.parseInt(u16, arguments[1], 10);
-    const chunk_size = try fmt.parseInt(usize, arguments[2], 10);
-    const static_root_argument = arguments[3];
-    const static_root = if (!mem.endsWith(u8, static_root_argument, "/"))
-        try mem.concat(heap.page_allocator, u8, &[_][]const u8{ static_root_argument, "/" })
-    else
-        try heap.page_allocator.dupe(u8, static_root_argument);
-
-    var memory_debug = false;
-    var blockList: ?BlockList = null;
-
-    for (arguments) |argument| {
-        if (mem.eql(u8, argument, "memory-debug")) {
-            memory_debug = true;
-
-            break;
-        } else if (mem.startsWith(u8, argument, "uid=")) {
-            var it = mem.split(argument, "=");
-            _ = it.next();
-            if (it.next()) |uid_value| {
-                try setUid(try fmt.parseUnsigned(u32, uid_value, 10));
-            }
-        } else if (mem.startsWith(u8, argument, "blocklist")) {
-            var it = mem.split(argument, "=");
-            _ = it.next();
-            if (it.next()) |filename| {
-                const blockListSlice = try fs.cwd().readFileAlloc(heap.page_allocator, filename, 1_000_000);
-                blockList = try BlockList.fromSlice(heap.page_allocator, blockListSlice);
-            }
-        }
-    }
-
-    process.argsFree(heap.page_allocator, arguments);
+    const options = try getCommandLineOptions();
 
     var random_bytes: [8]u8 = undefined;
     try std.crypto.randomBytes(random_bytes[0..]);
@@ -161,7 +116,7 @@ pub fn main() anyerror!void {
 
     const endpoint = network.EndPoint{
         .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
-        .port = port,
+        .port = options.port,
     };
 
     const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
@@ -183,6 +138,8 @@ pub fn main() anyerror!void {
 
     var running = true;
     const local_endpoint = try socket.getLocalEndPoint();
+
+    if (options.uid) |uid| try setUid(uid);
 
     while (running) {
         _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {
@@ -245,7 +202,9 @@ pub fn main() anyerror!void {
                     error.NotConnected => continue,
                 }
             };
-            if (blockList == null or !blockList.?.isBlocked(remote_endpoint.address.ipv4)) {
+            if (options.blocklist == null or !options.blocklist.?.isBlocked(
+                remote_endpoint.address.ipv4,
+            )) {
                 socket_set.add(
                     client_socket,
                     .{ .read = true, .write = true },
@@ -298,13 +257,13 @@ pub fn main() anyerror!void {
             connection.* = try handleConnection(
                 connection,
                 request_stack_allocator,
-                if (memory_debug) &logging_allocator.allocator else heap.page_allocator,
+                if (options.memory_debug) &logging_allocator.allocator else heap.page_allocator,
                 local_endpoint,
                 &socket_set,
-                chunk_size,
-                memory_debug,
+                options.chunk_size,
+                options.memory_debug,
                 connections,
-                static_root,
+                options.static_root,
                 shutdown_key,
                 &running,
             );
@@ -959,6 +918,69 @@ fn handleReceiving(
     }
 
     return connection.*;
+}
+
+fn getCommandLineOptions() !Options {
+    const arguments = try process.argsAlloc(heap.page_allocator);
+    const process_name = arguments[0];
+    const usage = "Usage: {} <port> [chunk_size=256] [static_root=./static] [blocklist=null] [uid=null] [memory-debug=false]";
+    if (arguments.len < 2) {
+        log.err(usage, .{process_name});
+
+        process.exit(1);
+    }
+
+    const port = try fmt.parseInt(u16, arguments[1], 10);
+    var options = Options{ .port = port };
+
+    for (arguments) |argument| {
+        if (mem.startsWith(u8, argument, "memory-debug")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |memory_debug| {
+                options.memory_debug = if (mem.eql(u8, memory_debug, "true")) true else false;
+            }
+        } else if (mem.startsWith(u8, argument, "uid=")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |uid_value| {
+                options.uid = try fmt.parseUnsigned(u16, uid_value, 10);
+            }
+        } else if (mem.startsWith(u8, argument, "blocklist")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |filename| {
+                const blockListSlice = try fs.cwd().readFileAlloc(
+                    heap.page_allocator,
+                    filename,
+                    1_000_000,
+                );
+
+                options.blocklist = try BlockList.fromSlice(heap.page_allocator, blockListSlice);
+            }
+        } else if (mem.startsWith(u8, argument, "chunk-size")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |chunk_size| {
+                options.chunk_size = try fmt.parseUnsigned(u16, chunk_size, 10);
+            }
+        } else if (mem.startsWith(u8, argument, "static-root")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |static_root_argument| {
+                const static_root = if (!mem.endsWith(u8, static_root_argument, "/"))
+                    try mem.concat(heap.page_allocator, u8, &[_][]const u8{ static_root_argument, "/" })
+                else
+                    try heap.page_allocator.dupe(u8, static_root_argument);
+
+                options.static_root = static_root;
+            }
+        }
+    }
+
+    process.argsFree(heap.page_allocator, arguments);
+
+    return options;
 }
 
 fn insertIntoFirstFree(

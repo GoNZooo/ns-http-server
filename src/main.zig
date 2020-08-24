@@ -66,7 +66,8 @@ const SendingState = struct {
 
         if (read_bytes < buffer.len) {
             const end_timestamp = std.time.nanoTimestamp();
-            const timestamp_in_ms = @intToFloat(f64, end_timestamp - self.start_timestamp) / 1_000_000.0;
+            const time_difference = end_timestamp - self.start_timestamp;
+            const timestamp_in_ms = @intToFloat(f64, time_difference) / 1_000_000.0;
             log.info(
                 "{} <== {} ({d:.3} ms)",
                 .{ self.endpoint, self.static_path, timestamp_in_ms },

@@ -446,7 +446,7 @@ fn handleReceiving(
 ) !Connection {
     const timestamp = std.time.nanoTimestamp();
 
-    if ((timestamp - receiving.start_timestamp) > 30_000_000_000) {
+    if ((timestamp - receiving.start_timestamp) > receiving_state_timeout) {
         socket_set.remove(receiving.socket);
         receiving.socket.close();
 
@@ -1046,6 +1046,7 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
 
 const max_stack_file_read_size = 4_000_000;
 const max_heap_file_read_size = 1_000_000_000_000;
+const receiving_state_timeout = 30_000_000_000;
 
 const not_found_response =
     \\HTTP/1.1 404 Not found

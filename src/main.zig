@@ -303,7 +303,7 @@ fn removeFaultedReceivingSocket(receiving: ReceivingState, socket_set: *SocketSe
     return false;
 }
 
-fn removeFaultedSendingSocket(sending: *SendingState, socket_set: *SocketSet) !bool {
+fn removeFaultedSendingSocket(sending: *SendingState, socket_set: *SocketSet) bool {
     if (socket_set.isFaulted(sending.socket)) {
         sending.deinit(socket_set);
 
@@ -328,12 +328,7 @@ fn handleConnection(
 ) !Connection {
     const socket_is_faulted = switch (connection.*) {
         .receiving => |receiving| removeFaultedReceivingSocket(receiving, socket_set),
-        .sending => |*sending| removeFaultedSendingSocket(sending, socket_set) catch |e| {
-            switch (e) {
-                // blow up here intentionally, we're running with a leak detecting allocator
-                error.Leak => unreachable,
-            }
-        },
+        .sending => |*sending| removeFaultedSendingSocket(sending, socket_set),
         .idle => false,
     };
 

@@ -28,6 +28,35 @@ const Connection = union(enum) {
     receiving: ReceivingState,
     sending: SendingState,
 
+    pub fn sending(
+        file: fs.File,
+        file_length: usize,
+        socket: Socket,
+        endpoint: EndPoint,
+        etag: u32,
+        arena: *heap.ArenaAllocator,
+        static_path: []const u8,
+        request: parsing.Request,
+        longlived_allocator: *mem.Allocator,
+    ) Connection {
+        return Connection{
+            .sending = SendingState{
+                .socket = socket,
+                .file = file,
+                .file_length = file_length,
+                .etag = etag,
+                .endpoint = endpoint,
+                .arena = arena,
+                .static_path = static_path,
+                .request = request,
+                .start_timestamp = std.time.nanoTimestamp(),
+                .longlived_allocator = longlived_allocator,
+                .position = 0,
+                .headers_sent = false,
+            },
+        };
+    }
+
     pub fn receiving(socket: Socket, endpoint: EndPoint) Connection {
         return Connection{
             .receiving = ReceivingState{
@@ -50,7 +79,6 @@ const SendingState = struct {
 
     file: fs.File,
     file_length: usize,
-    position: usize,
     socket: Socket,
     endpoint: EndPoint,
     etag: u32,
@@ -58,9 +86,9 @@ const SendingState = struct {
     static_path: []const u8,
     request: parsing.Request,
     start_timestamp: i128,
+    longlived_allocator: *mem.Allocator,
     headers_sent: bool = false,
-
-    longtime_allocator: *mem.Allocator,
+    position: usize = 0,
 
     pub fn sendChunk(
         self: *Self,
@@ -95,7 +123,7 @@ const SendingState = struct {
     pub fn deinit(self: *Self, socket_set: *SocketSet) void {
         // self.request.deinit();
         self.arena.deinit();
-        self.longtime_allocator.destroy(self.arena);
+        self.longlived_allocator.destroy(self.arena);
         self.socket.close();
         self.file.close();
         socket_set.remove(self.socket);
@@ -326,7 +354,7 @@ fn removeFaultedSendingSocket(sending: *SendingState, socket_set: *SocketSet) bo
 fn handleConnection(
     connection: *Connection,
     stack_allocator: *mem.Allocator,
-    longtime_allocator: *mem.Allocator,
+    longlived_allocator: *mem.Allocator,
     local_endpoint: EndPoint,
     socket_set: *SocketSet,
     send_chunk_size: usize,
@@ -348,7 +376,7 @@ fn handleConnection(
         .receiving => |receiving| try handleReceiving(
             receiving,
             connection,
-            longtime_allocator,
+            longlived_allocator,
             stack_allocator,
             socket_set,
             connections,
@@ -362,7 +390,7 @@ fn handleConnection(
             sending,
             connection,
             socket_set,
-            longtime_allocator,
+            longlived_allocator,
             stack_allocator,
             send_chunk_size,
         ),
@@ -374,7 +402,7 @@ fn handleSending(
     sending: *SendingState,
     connection: *Connection,
     socket_set: *SocketSet,
-    longtime_allocator: *mem.Allocator,
+    longlived_allocator: *mem.Allocator,
     stack_allocator: *mem.Allocator,
     send_chunk_size: usize,
 ) !Connection {
@@ -441,7 +469,7 @@ fn handleSending(
 fn handleReceiving(
     receiving: ReceivingState,
     connection: *Connection,
-    longtime_allocator: *mem.Allocator,
+    longlived_allocator: *mem.Allocator,
     stack_allocator: *mem.Allocator,
     socket_set: *SocketSet,
     connections: ArrayList(Connection),
@@ -458,8 +486,8 @@ fn handleReceiving(
 
         return Connection.idle;
     } else if (socket_set.isReadyRead(receiving.socket)) {
-        var arena = try longtime_allocator.create(heap.ArenaAllocator);
-        arena.* = heap.ArenaAllocator.init(longtime_allocator);
+        var arena = try longlived_allocator.create(heap.ArenaAllocator);
+        arena.* = heap.ArenaAllocator.init(longlived_allocator);
         errdefer arena.deinit();
         var request_arena_allocator = &arena.allocator;
 
@@ -480,7 +508,7 @@ fn handleReceiving(
             buffer[0..received],
         ) catch |parsing_error| {
             arena.deinit();
-            longtime_allocator.destroy(arena);
+            longlived_allocator.destroy(arena);
             socket_set.remove(socket);
             switch (parsing_error) {
                 error.OutOfMemory => {
@@ -571,7 +599,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -643,7 +671,7 @@ fn handleReceiving(
             socket.close();
             socket_set.remove(socket);
             arena.deinit();
-            longtime_allocator.destroy(arena);
+            longlived_allocator.destroy(arena);
 
             return Connection.idle;
         } else if (request.request_line.method == .get) {
@@ -668,7 +696,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -695,7 +723,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -712,7 +740,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -748,7 +776,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -769,7 +797,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -785,7 +813,7 @@ fn handleReceiving(
                         socket.close();
                         socket_set.remove(socket);
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -831,29 +859,23 @@ fn handleReceiving(
                     socket.close();
                     socket_set.remove(socket);
                     arena.deinit();
-                    longtime_allocator.destroy(arena);
+                    longlived_allocator.destroy(arena);
 
                     return Connection.idle;
                 }
             }
 
-            const sending = Connection{
-                .sending = SendingState{
-                    .socket = socket,
-                    .file = file,
-                    .file_length = expected_file_size,
-                    .position = 0,
-                    .etag = etag,
-                    .endpoint = remote_endpoint,
-                    .arena = arena,
-                    .static_path = static_path,
-                    .request = request,
-                    .start_timestamp = timestamp,
-                    .longtime_allocator = longtime_allocator,
-                },
-            };
-
-            return sending;
+            return Connection.sending(
+                file,
+                expected_file_size,
+                socket,
+                remote_endpoint,
+                etag,
+                arena,
+                static_path,
+                request,
+                longlived_allocator,
+            );
         } else if (request.request_line.method == .post and
             mem.eql(u8, request.request_line.resourceSlice(), "/exit"))
         {
@@ -879,7 +901,7 @@ fn handleReceiving(
                         socket_set.remove(socket);
                         socket.close();
                         arena.deinit();
-                        longtime_allocator.destroy(arena);
+                        longlived_allocator.destroy(arena);
 
                         return Connection.idle;
                     },
@@ -898,7 +920,7 @@ fn handleReceiving(
             socket_set.remove(socket);
             socket.close();
             arena.deinit();
-            longtime_allocator.destroy(arena);
+            longlived_allocator.destroy(arena);
 
             return Connection.idle;
         } else {
@@ -917,7 +939,7 @@ fn handleReceiving(
             socket_set.remove(socket);
             socket.close();
             arena.deinit();
-            longtime_allocator.destroy(arena);
+            longlived_allocator.destroy(arena);
 
             return Connection.idle;
         }

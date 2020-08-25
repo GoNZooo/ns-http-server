@@ -145,12 +145,7 @@ pub fn main() anyerror!void {
 
     const options = try getCommandLineOptions();
 
-    var random_bytes: [8]u8 = undefined;
-    try std.crypto.randomBytes(random_bytes[0..]);
-    const seed = mem.readIntLittle(u64, random_bytes[0..8]);
-    var r = std.rand.DefaultCsprng.init(seed);
-
-    const shutdown_key = r.random.int(u128);
+    const shutdown_key = try getShutDownKey();
     log.info("Shutdown key is: {}", .{shutdown_key});
 
     const endpoint = network.EndPoint{
@@ -1066,6 +1061,15 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
     }
 
     return false;
+}
+
+fn getShutDownKey() !u128 {
+    var random_bytes: [8]u8 = undefined;
+    try std.crypto.randomBytes(random_bytes[0..]);
+    const seed = mem.readIntLittle(u64, random_bytes[0..8]);
+    var r = std.rand.DefaultCsprng.init(seed);
+
+    return r.random.int(u128);
 }
 
 const max_stack_file_read_size = 4_000_000;

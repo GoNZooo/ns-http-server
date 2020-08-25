@@ -27,6 +27,16 @@ const Connection = union(enum) {
     idle: void,
     receiving: ReceivingState,
     sending: SendingState,
+
+    pub fn receiving(socket: Socket, endpoint: EndPoint) Connection {
+        return Connection{
+            .receiving = ReceivingState{
+                .socket = socket,
+                .endpoint = endpoint,
+                .start_timestamp = std.time.nanoTimestamp(),
+            },
+        };
+    }
 };
 
 const ReceivingState = struct {
@@ -986,16 +996,12 @@ fn insertIntoFirstFree(
 ) !void {
     const timestamp = std.time.nanoTimestamp();
     var found_slot = false;
-    const receiving_state = ReceivingState{
-        .socket = socket,
-        .endpoint = endpoint,
-        .start_timestamp = timestamp,
-    };
+    const receiving_connection = Connection.receiving(socket, endpoint);
 
     for (connections.items) |*connection, i| {
         switch (connection.*) {
             .idle => {
-                connection.* = Connection{ .receiving = receiving_state };
+                connection.* = receiving_connection;
                 found_slot = true;
 
                 break;
@@ -1004,7 +1010,7 @@ fn insertIntoFirstFree(
         }
     }
 
-    if (!found_slot) try connections.append(Connection{ .receiving = receiving_state });
+    if (!found_slot) try connections.append(receiving_connection);
 }
 
 fn determineContentType(path: []const u8) []const u8 {

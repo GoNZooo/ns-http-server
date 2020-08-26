@@ -30,7 +30,7 @@ pub const log_level = .info;
 const Options = struct {
     port: u16,
     chunk_size: u16 = 256,
-    static_root: []const u8 = "./static",
+    static_root: []const u8 = "./static/",
     uid: ?u32 = null,
     blocklist: ?BlockList = null,
     memory_debug: bool = false,
@@ -271,7 +271,11 @@ fn getCommandLineOptions() !Options {
             _ = it.next();
             if (it.next()) |static_root_argument| {
                 const static_root = if (!mem.endsWith(u8, static_root_argument, "/"))
-                    try mem.concat(heap.page_allocator, u8, &[_][]const u8{ static_root_argument, "/" })
+                    try mem.concat(
+                        heap.page_allocator,
+                        u8,
+                        &[_][]const u8{ static_root_argument, "/" },
+                    )
                 else
                     try heap.page_allocator.dupe(u8, static_root_argument);
 

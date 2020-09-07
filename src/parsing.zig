@@ -22,7 +22,7 @@ pub const Request = struct {
         errdefer allocator.free(request_text);
         var it = mem.split(request_text, "\n");
         const request_line_slice = it.next() orelse unreachable;
-        const request_line = try RequestLine.fromSlice(request_line_slice);
+        const request_line = try RequestLine.fromSlice(allocator, request_line_slice);
         var header_list = ArrayList(Header).init(allocator);
         errdefer header_list.deinit();
         var line = it.next();
@@ -51,27 +51,23 @@ pub const RequestLine = struct {
     const Self = @This();
 
     method: Method,
-    resource: [MAX_RESOURCE_LENGTH]u8,
-    resource_length: usize,
+    resource: []const u8,
     version: Version,
 
-    pub fn resourceSlice(self: Self) []const u8 {
-        return self.resource[0..self.resource_length];
-    }
-
-    pub fn fromSlice(slice: []const u8) !Self {
+    pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Self {
         var it = mem.split(mem.trimRight(u8, slice, "\r\n"), " ");
 
         const maybe_method_slice = it.next();
         if (maybe_method_slice == null) return error.NoMethodGiven;
         const method = try Method.fromSlice(maybe_method_slice.?);
 
-        var resource: [MAX_RESOURCE_LENGTH:0]u8 = undefined;
+        // var resource = allocator.alloc(u8, MAX_RESOURCE_LENGTH);
         const maybe_resource_slice = it.next();
         if (maybe_resource_slice == null) return error.NoResourceGiven;
         const resource_slice = maybe_resource_slice.?;
-        mem.copy(u8, resource[0..], resource_slice);
-        resource[resource_slice.len] = 0;
+        const resource = try allocator.dupe(u8, resource_slice);
+        // mem.copy(u8, resource[0..], resource_slice);
+        // resource[resource_slice.len] = 0;
 
         const maybe_version_slice = it.next();
         if (maybe_version_slice == null) return error.NoVersionGiven;
@@ -80,7 +76,6 @@ pub const RequestLine = struct {
         return Self{
             .method = method,
             .resource = resource,
-            .resource_length = resource_slice.len,
             .version = version,
         };
     }

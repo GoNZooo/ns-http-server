@@ -342,7 +342,7 @@ fn handleReceiving(
             }
         };
 
-        const resource_slice = request.request_line.resourceSlice()[1..];
+        const resource_slice = request.request_line.resource[1..];
         const resource = if (mem.eql(u8, resource_slice, ""))
             "index.html"
         else
@@ -647,7 +647,7 @@ fn handleReceiving(
                 longlived_allocator,
             );
         } else if (request.request_line.method == .post and
-            mem.eql(u8, request.request_line.resourceSlice(), "/exit"))
+            mem.eql(u8, request.request_line.resource, "/exit"))
         {
             const body_value = fmt.parseUnsigned(
                 u128,

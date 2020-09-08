@@ -17,6 +17,8 @@ pub const Request = struct {
     request_text: []const u8,
     allocator: *mem.Allocator,
 
+    /// The caller is responsible for calling `result.deinit()`, which frees all the allocated
+    /// structures.
     pub fn fromSlice(allocator: *mem.Allocator, slice: []const u8) !Self {
         var request_text = try allocator.dupe(u8, slice);
         errdefer allocator.free(request_text);
@@ -61,13 +63,10 @@ pub const RequestLine = struct {
         if (maybe_method_slice == null) return error.NoMethodGiven;
         const method = try Method.fromSlice(maybe_method_slice.?);
 
-        // var resource = allocator.alloc(u8, MAX_RESOURCE_LENGTH);
         const maybe_resource_slice = it.next();
         if (maybe_resource_slice == null) return error.NoResourceGiven;
         const resource_slice = maybe_resource_slice.?;
         const resource = try allocator.dupe(u8, resource_slice);
-        // mem.copy(u8, resource[0..], resource_slice);
-        // resource[resource_slice.len] = 0;
 
         const maybe_version_slice = it.next();
         if (maybe_version_slice == null) return error.NoVersionGiven;

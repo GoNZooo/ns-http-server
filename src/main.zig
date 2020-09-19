@@ -14,12 +14,13 @@ const network = @import("network");
 
 const parsing = @import("./parsing.zig");
 
+const connection = @import("./connection.zig");
 const ArrayList = std.ArrayList;
 const Socket = network.Socket;
 const SocketSet = network.SocketSet;
 const EndPoint = network.EndPoint;
 const BlockList = @import("./blocklist.zig").BlockList;
-const Connection = @import("./connection.zig").Connection;
+const Connection = connection.Connection;
 const ReceivingState = @import("./connection.zig").ReceivingState;
 const SendingState = @import("./connection.zig").SendingState;
 const handleConnection = @import("./connection.zig").handleConnection;
@@ -37,6 +38,221 @@ const Options = struct {
     memory_debug: bool = false,
 };
 
+pub fn Server(comptime handle_connection: anytype) type {
+    const HandleError = @TypeOf(handle_connection).ReturnType.ErrorSet;
+
+    return struct {
+        const Self = @This();
+
+        endpoint: network.EndPoint,
+        socket: Socket,
+        connections: ArrayList(Connection),
+        socket_set: SocketSet,
+        request_stack_allocator: *mem.Allocator,
+        fixed_buffer_allocator: heap.FixedBufferAllocator,
+        long_lived_allocator: *mem.Allocator,
+        chunk_size: u16,
+        memory_debug: bool,
+        shutdown_key: u128,
+        running: bool,
+        local_endpoint: network.EndPoint,
+        options: Options,
+
+        pub fn init(
+            infrastructure_allocator: *mem.Allocator,
+            long_lived_allocator: *mem.Allocator,
+            address: network.Address,
+            port: u16,
+            chunk_size: u16,
+            memory_debug: bool,
+            shutdown_key: u128,
+            options: Options,
+        ) !Self {
+            var memory_buffer: [max_stack_file_read_size]u8 = undefined;
+            var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
+            var request_stack_allocator = &fixed_buffer_allocator.allocator;
+
+            const endpoint = network.EndPoint{
+                .address = address,
+                .port = port,
+            };
+            const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
+            var connections = ArrayList(Connection).init(infrastructure_allocator);
+            try socket.bind(endpoint);
+            try socket.listen();
+            if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
+                try socket.enablePortReuse(true);
+            }
+            var socket_set = try SocketSet.init(infrastructure_allocator);
+
+            try socket_set.add(socket, .{ .read = true, .write = true });
+
+            const local_endpoint = try socket.getLocalEndPoint();
+
+            return Self{
+                .endpoint = endpoint,
+                .socket = socket,
+                .socket_set = socket_set,
+                .request_stack_allocator = request_stack_allocator,
+                .fixed_buffer_allocator = fixed_buffer_allocator,
+                .long_lived_allocator = long_lived_allocator,
+                .chunk_size = chunk_size,
+                .memory_debug = memory_debug,
+                .connections = connections,
+                .running = false,
+                .local_endpoint = local_endpoint,
+                .options = options,
+                .shutdown_key = shutdown_key,
+            };
+        }
+
+        pub fn deinit(self: Self) void {
+            self.socket.close();
+            self.socket_set.deinit();
+        }
+
+        pub fn run(self: *Self) !void {
+            self.running = true;
+
+            while (self.running) {
+                _ = network.waitForSocketEvent(&self.socket_set, 10_000_000_000_000) catch |e| {
+                    if (builtin.os.tag == .windows) {
+                        switch (e) {
+                            error.FileDescriptorNotASocket => {
+                                debug.print("===== ERROR socket_set={}", .{self.socket_set});
+                                for (self.connections.items) |c, i| {
+                                    debug.print("===== ERROR connection{}={}", .{ i, c });
+                                }
+                                process.exit(1);
+                            },
+                            error.OutOfMemory => {},
+                            error.Unexpected => {},
+                        }
+                    } else {
+                        switch (e) {
+                            error.SystemResources, error.Unexpected => unreachable,
+                        }
+                    }
+                };
+
+                if (self.socket_set.isReadyRead(self.socket)) {
+                    const client_socket = self.socket.accept() catch |e| {
+                        switch (e) {
+                            error.ConnectionAborted => {
+                                log.err("Client aborted connection", .{});
+
+                                continue;
+                            },
+
+                            error.ProcessFdQuotaExceeded,
+                            error.SystemFdQuotaExceeded,
+                            error.SystemResources,
+                            error.UnsupportedAddressFamily,
+                            error.ProtocolFailure,
+                            error.BlockedByFirewall,
+                            error.WouldBlock,
+                            error.PermissionDenied,
+                            error.Unexpected,
+                            => {
+                                continue;
+                            },
+                        }
+                    };
+
+                    const remote_endpoint = client_socket.getRemoteEndPoint() catch |endpoint_error| {
+                        log.err("=== Unable to get client endpoint: {} ===", .{endpoint_error});
+
+                        switch (endpoint_error) {
+                            error.UnsupportedAddressFamily,
+                            error.Unexpected,
+                            error.InsufficientBytes,
+                            error.SystemResources,
+                            => {
+                                client_socket.close();
+
+                                continue;
+                            },
+                            error.NotConnected => continue,
+                        }
+                    };
+                    if (self.options.blocklist == null or
+                        !self.options.blocklist.?.isBlocked(remote_endpoint.address.ipv4))
+                    {
+                        self.socket_set.add(
+                            client_socket,
+                            .{ .read = true, .write = true },
+                        ) catch |socket_add_error| {
+                            switch (socket_add_error) {
+                                error.OutOfMemory => {
+                                    log.err(
+                                        "=== OOM when trying to add socket in socket_set: {} ===",
+                                        .{remote_endpoint},
+                                    );
+
+                                    client_socket.close();
+
+                                    continue;
+                                },
+                            }
+                        };
+                        insertIntoFirstFree(
+                            &self.connections,
+                            client_socket,
+                            remote_endpoint,
+                        ) catch |insert_connection_error| {
+                            switch (insert_connection_error) {
+                                error.OutOfMemory => {
+                                    log.err(
+                                        "=== OOM when trying to add connection: {} ===",
+                                        .{remote_endpoint},
+                                    );
+                                    client_socket.close();
+
+                                    continue;
+                                },
+                            }
+                        };
+                    } else {
+                        client_socket.close();
+                        log.info("Blocked connection from: {}", .{remote_endpoint});
+                    }
+                }
+
+                for (self.connections.items) |*c| {
+                    c.* = try handle_connection(
+                        c,
+                        self.request_stack_allocator,
+                        self.long_lived_allocator,
+                        self.local_endpoint,
+                        &self.socket_set,
+                        self.options.chunk_size,
+                        self.options.memory_debug,
+                        self.connections,
+                        self.options.static_root,
+                        self.shutdown_key,
+                        &self.running,
+                    );
+
+                    self.fixed_buffer_allocator.reset();
+                }
+            }
+
+            for (self.connections.items) |*c| {
+                switch (c.*) {
+                    .idle => {},
+                    .receiving => |receiving| {
+                        receiving.socket.close();
+                    },
+                    .sending => |*sending| {
+                        sending.socket.close();
+                        sending.deinit(&self.socket_set);
+                    },
+                }
+            }
+        }
+    };
+}
+
 pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
@@ -46,175 +262,25 @@ pub fn main() anyerror!void {
     const shutdown_key = try getShutDownKey();
     log.info("Shutdown key is: {}", .{shutdown_key});
 
-    const endpoint = network.EndPoint{
-        .address = network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
-        .port = options.port,
-    };
-
-    const socket = try Socket.create(network.AddressFamily.ipv4, network.Protocol.tcp);
-    var connections = ArrayList(Connection).init(heap.page_allocator);
-    try socket.bind(endpoint);
-    try socket.listen();
-    defer socket.close();
-    if (builtin.os.tag == .linux or builtin.os.tag == .freebsd) {
-        try socket.enablePortReuse(true);
-    }
-    var socket_set = try SocketSet.init(heap.page_allocator);
-    defer socket_set.deinit();
-    try socket_set.add(socket, .{ .read = true, .write = true });
-
-    var memory_buffer: [max_stack_file_read_size]u8 = undefined;
-    var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
-    var request_stack_allocator = &fixed_buffer_allocator.allocator;
     var logging_allocator = heap.loggingAllocator(heap.page_allocator, io.getStdOut().writer());
+    const long_lived_allocator = if (options.memory_debug)
+        &logging_allocator.allocator
+    else
+        heap.page_allocator;
 
-    var running = true;
-    const local_endpoint = try socket.getLocalEndPoint();
-
+    var server = try Server(handleConnection).init(
+        heap.page_allocator,
+        long_lived_allocator,
+        network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
+        options.port,
+        options.chunk_size,
+        options.memory_debug,
+        shutdown_key,
+        options,
+    );
     if (options.uid) |uid| try setUid(uid);
 
-    while (running) {
-        _ = network.waitForSocketEvent(&socket_set, 10_000_000_000_000) catch |e| {
-            if (builtin.os.tag == .windows) {
-                switch (e) {
-                    error.FileDescriptorNotASocket => {
-                        debug.print("===== ERROR socket_set={}", .{socket_set});
-                        for (connections.items) |connection, i| {
-                            debug.print("===== ERROR connection{}={}", .{ i, connection });
-                        }
-                        process.exit(1);
-                    },
-                    error.OutOfMemory => {},
-                    error.Unexpected => {},
-                }
-            } else {
-                switch (e) {
-                    error.SystemResources, error.Unexpected => unreachable,
-                }
-            }
-        };
-
-        if (socket_set.isReadyRead(socket)) {
-            const client_socket = socket.accept() catch |e| {
-                switch (e) {
-                    error.ConnectionAborted => {
-                        log.err("Client aborted connection", .{});
-
-                        continue;
-                    },
-
-                    error.ProcessFdQuotaExceeded,
-                    error.SystemFdQuotaExceeded,
-                    error.SystemResources,
-                    error.UnsupportedAddressFamily,
-                    error.ProtocolFailure,
-                    error.BlockedByFirewall,
-                    error.WouldBlock,
-                    error.PermissionDenied,
-                    error.Unexpected,
-                    => {
-                        continue;
-                    },
-                }
-            };
-
-            const remote_endpoint = client_socket.getRemoteEndPoint() catch |endpoint_error| {
-                log.err("=== Unable to get client endpoint: {} ===", .{endpoint_error});
-
-                switch (endpoint_error) {
-                    error.UnsupportedAddressFamily,
-                    error.Unexpected,
-                    error.InsufficientBytes,
-                    error.SystemResources,
-                    => {
-                        client_socket.close();
-
-                        continue;
-                    },
-                    error.NotConnected => continue,
-                }
-            };
-            if (options.blocklist != null and
-                options.blocklist.?.isBlocked(remote_endpoint.address.ipv4))
-            {
-                socket_set.add(
-                    client_socket,
-                    .{ .read = true, .write = true },
-                ) catch |socket_add_error| {
-                    switch (socket_add_error) {
-                        error.OutOfMemory => {
-                            log.err(
-                                "=== OOM when trying to add socket in socket_set: {} ===",
-                                .{remote_endpoint},
-                            );
-
-                            client_socket.close();
-
-                            continue;
-                        },
-                    }
-                };
-                insertIntoFirstFree(
-                    &connections,
-                    client_socket,
-                    remote_endpoint,
-                ) catch |insert_connection_error| {
-                    switch (insert_connection_error) {
-                        error.OutOfMemory => {
-                            log.err(
-                                "=== OOM when trying to add connection: {} ===",
-                                .{remote_endpoint},
-                            );
-                            client_socket.close();
-
-                            continue;
-                        },
-                    }
-                };
-            } else {
-                client_socket.close();
-                log.info("Blocked connection from: {}", .{remote_endpoint});
-            }
-        }
-
-        if (debug_prints) {
-            debug.print("===== connections.capacity={}\n", .{connections.capacity});
-            debug.print("===== connections.items.len={}\n", .{connections.items.len});
-            for (connections.items) |c| {
-                debug.print("\tc={}\n", .{c});
-            }
-        }
-
-        for (connections.items) |*connection| {
-            connection.* = try handleConnection(
-                connection,
-                request_stack_allocator,
-                if (options.memory_debug) &logging_allocator.allocator else heap.page_allocator,
-                local_endpoint,
-                &socket_set,
-                options.chunk_size,
-                options.memory_debug,
-                connections,
-                options.static_root,
-                shutdown_key,
-                &running,
-            );
-            fixed_buffer_allocator.reset();
-        }
-    }
-
-    for (connections.items) |*connection| {
-        switch (connection.*) {
-            .idle => {},
-            .receiving => |receiving| {
-                receiving.socket.close();
-            },
-            .sending => |*sending| {
-                sending.socket.close();
-                sending.deinit(&socket_set);
-            },
-        }
-    }
+    try server.run();
 }
 
 fn setUid(id: u32) !void {
@@ -300,10 +366,10 @@ fn insertIntoFirstFree(
     var found_slot = false;
     const receiving_connection = Connection.receiving(socket, endpoint);
 
-    for (connections.items) |*connection, i| {
-        switch (connection.*) {
+    for (connections.items) |*c, i| {
+        switch (c.*) {
             .idle => {
-                connection.* = receiving_connection;
+                c.* = receiving_connection;
                 found_slot = true;
 
                 break;

@@ -134,9 +134,9 @@ pub fn main() anyerror!void {
                     error.NotConnected => continue,
                 }
             };
-            if (options.blocklist == null or !options.blocklist.?.isBlocked(
-                remote_endpoint.address.ipv4,
-            )) {
+            if (options.blocklist != null and
+                options.blocklist.?.isBlocked(remote_endpoint.address.ipv4))
+            {
                 socket_set.add(
                     client_socket,
                     .{ .read = true, .write = true },

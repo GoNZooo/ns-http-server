@@ -228,7 +228,8 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
     defer process.argsFree(allocator, arguments);
 
     const process_name = arguments[0];
-    const usage = "Usage: {} <port> [chunk_size=256] [static_root=./static] [blocklist=null] [uid=null] [memory-debug=false]";
+    const usage = "Usage: {} <port> [chunk_size=256] [static_root=./static] [blocklist=null]" ++
+        " [uid=null] [memory-debug=false]";
     if (arguments.len < 2) {
         log.err(usage, .{process_name});
 

@@ -8,6 +8,7 @@ const log = std.log;
 const process = std.process;
 const debug = std.debug;
 const builtin = std.builtin;
+const io = std.io;
 
 const network = @import("network");
 
@@ -65,7 +66,7 @@ pub fn main() anyerror!void {
     var memory_buffer: [max_stack_file_read_size]u8 = undefined;
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
     var request_stack_allocator = &fixed_buffer_allocator.allocator;
-    var logging_allocator = heap.loggingAllocator(heap.page_allocator, std.io.getStdOut().writer());
+    var logging_allocator = heap.loggingAllocator(heap.page_allocator, io.getStdOut().writer());
 
     var running = true;
     const local_endpoint = try socket.getLocalEndPoint();

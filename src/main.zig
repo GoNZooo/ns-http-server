@@ -49,7 +49,7 @@ pub fn Server(comptime handle_connection: anytype) type {
         connections: ArrayList(Connection),
         socket_set: SocketSet,
         request_stack_allocator: *mem.Allocator,
-        fixed_buffer_allocator: heap.FixedBufferAllocator,
+        fixed_buffer_allocator: *heap.FixedBufferAllocator,
         long_lived_allocator: *mem.Allocator,
         chunk_size: u16,
         memory_debug: bool,
@@ -59,6 +59,7 @@ pub fn Server(comptime handle_connection: anytype) type {
         options: Options,
 
         pub fn init(
+            fixed_buffer_allocator: *heap.FixedBufferAllocator,
             infrastructure_allocator: *mem.Allocator,
             long_lived_allocator: *mem.Allocator,
             address: network.Address,
@@ -68,8 +69,6 @@ pub fn Server(comptime handle_connection: anytype) type {
             shutdown_key: u128,
             options: Options,
         ) !Self {
-            var memory_buffer: [max_stack_file_read_size]u8 = undefined;
-            var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
             var request_stack_allocator = &fixed_buffer_allocator.allocator;
 
             const endpoint = network.EndPoint{
@@ -268,7 +267,11 @@ pub fn main() anyerror!void {
     else
         heap.page_allocator;
 
+    var memory_buffer: [max_stack_file_read_size]u8 = undefined;
+    var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);
+
     var server = try Server(handleConnection).init(
+        &fixed_buffer_allocator,
         heap.page_allocator,
         long_lived_allocator,
         network.Address{ .ipv4 = .{ .value = [_]u8{ 0, 0, 0, 0 } } },
@@ -323,12 +326,12 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
             _ = it.next();
             if (it.next()) |filename| {
                 const blockListSlice = try fs.cwd().readFileAlloc(
-                    heap.page_allocator,
+                    allocator,
                     filename,
                     1_000_000,
                 );
 
-                options.blocklist = try BlockList.fromSlice(heap.page_allocator, blockListSlice);
+                options.blocklist = try BlockList.fromSlice(allocator, blockListSlice);
             }
         } else if (mem.startsWith(u8, argument, "chunk-size")) {
             var it = mem.split(argument, "=");
@@ -342,12 +345,12 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
             if (it.next()) |static_root_argument| {
                 const static_root = if (!mem.endsWith(u8, static_root_argument, "/"))
                     try mem.concat(
-                        heap.page_allocator,
+                        allocator,
                         u8,
                         &[_][]const u8{ static_root_argument, "/" },
                     )
                 else
-                    try heap.page_allocator.dupe(u8, static_root_argument);
+                    try allocator.dupe(u8, static_root_argument);
 
                 options.static_root = static_root;
             }

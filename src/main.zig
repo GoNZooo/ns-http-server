@@ -41,7 +41,7 @@ pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
 
-    const options = try getCommandLineOptions();
+    const options = try getCommandLineOptions(heap.page_allocator);
 
     const shutdown_key = try getShutDownKey();
     log.info("Shutdown key is: {}", .{shutdown_key});
@@ -223,8 +223,10 @@ fn setUid(id: u32) !void {
     }
 }
 
-fn getCommandLineOptions() !Options {
-    const arguments = try process.argsAlloc(heap.page_allocator);
+fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
+    const arguments = try process.argsAlloc(allocator);
+    defer process.argsFree(allocator, arguments);
+
     const process_name = arguments[0];
     const usage = "Usage: {} <port> [chunk_size=256] [static_root=./static] [blocklist=null] [uid=null] [memory-debug=false]";
     if (arguments.len < 2) {
@@ -284,8 +286,6 @@ fn getCommandLineOptions() !Options {
             }
         }
     }
-
-    process.argsFree(heap.page_allocator, arguments);
 
     return options;
 }

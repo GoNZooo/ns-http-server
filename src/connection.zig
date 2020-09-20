@@ -131,7 +131,6 @@ pub fn handleConnection(
     memory_debug: bool,
     connections: ArrayList(Connection),
     static_root: []const u8,
-    shutdown_key: u128,
     running: *bool,
 ) !Connection {
     const socket_is_faulted = switch (connection.*) {
@@ -151,7 +150,6 @@ pub fn handleConnection(
             socket_set,
             connections,
             static_root,
-            shutdown_key,
             running,
             memory_debug,
         ),
@@ -244,7 +242,6 @@ fn handleReceiving(
     socket_set: *SocketSet,
     connections: ArrayList(Connection),
     static_root: []const u8,
-    shutdown_key: u128,
     running: *bool,
     memory_debug: bool,
 ) !Connection {
@@ -646,53 +643,6 @@ fn handleReceiving(
                 request,
                 longlived_allocator,
             );
-        } else if (request.request_line.method == .post and
-            mem.eql(u8, request.request_line.resource, "/exit"))
-        {
-            const body_value = fmt.parseUnsigned(
-                u128,
-                request.body,
-                10,
-            ) catch |parse_error| {
-                switch (parse_error) {
-                    error.Overflow, error.InvalidCharacter => {
-                        _ = socket.send(bad_request_response) catch |send_error| {
-                            log.err(
-                                "Exit Bad Request send error: {}",
-                                .{send_error},
-                            );
-                        };
-
-                        log.err(
-                            "{} <== 400 Bad Request ({})",
-                            .{ remote_endpoint, parse_error },
-                        );
-
-                        socket_set.remove(socket);
-                        socket.close();
-                        arena.deinit();
-                        longlived_allocator.destroy(arena);
-
-                        return Connection.idle;
-                    },
-                }
-            };
-            if (body_value == shutdown_key) {
-                running.* = false;
-            } else {
-                _ = socket.send(bad_request_response) catch |send_error| {
-                    log.err(
-                        "Exit code bad, Bad Request send error: {}",
-                        .{send_error},
-                    );
-                };
-            }
-            socket_set.remove(socket);
-            socket.close();
-            arena.deinit();
-            longlived_allocator.destroy(arena);
-
-            return Connection.idle;
         } else {
             _ = socket.send(method_not_allowed_response) catch |send_error| {
                 log.err(

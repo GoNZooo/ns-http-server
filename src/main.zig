@@ -53,7 +53,6 @@ pub fn Server(comptime handle_connection: anytype) type {
         long_lived_allocator: *mem.Allocator,
         chunk_size: u16,
         memory_debug: bool,
-        shutdown_key: u128,
         running: bool,
         local_endpoint: network.EndPoint,
         options: Options,
@@ -66,7 +65,6 @@ pub fn Server(comptime handle_connection: anytype) type {
             port: u16,
             chunk_size: u16,
             memory_debug: bool,
-            shutdown_key: u128,
             options: Options,
         ) !Self {
             var request_stack_allocator = &fixed_buffer_allocator.allocator;
@@ -101,7 +99,6 @@ pub fn Server(comptime handle_connection: anytype) type {
                 .running = false,
                 .local_endpoint = local_endpoint,
                 .options = options,
-                .shutdown_key = shutdown_key,
             };
         }
 
@@ -228,7 +225,6 @@ pub fn Server(comptime handle_connection: anytype) type {
                         self.options.memory_debug,
                         self.connections,
                         self.options.static_root,
-                        self.shutdown_key,
                         &self.running,
                     );
 
@@ -258,9 +254,6 @@ pub fn main() anyerror!void {
 
     const options = try getCommandLineOptions(heap.page_allocator);
 
-    const shutdown_key = try getShutDownKey();
-    log.info("Shutdown key is: {}", .{shutdown_key});
-
     var logging_allocator = heap.loggingAllocator(heap.page_allocator, io.getStdOut().writer());
     const long_lived_allocator = if (options.memory_debug)
         &logging_allocator.allocator
@@ -278,7 +271,6 @@ pub fn main() anyerror!void {
         options.port,
         options.chunk_size,
         options.memory_debug,
-        shutdown_key,
         options,
     );
     if (options.uid) |uid| try setUid(uid);

@@ -19,7 +19,7 @@ pub const Connection = union(enum) {
     receiving: ReceivingState,
     sending: SendingState,
 
-    pub fn sending(
+    pub fn sendingFile(
         file: fs.File,
         file_length: usize,
         socket: Socket,
@@ -33,8 +33,9 @@ pub const Connection = union(enum) {
         return Connection{
             .sending = SendingState{
                 .socket = socket,
-                .file = file,
-                .file_length = file_length,
+                .payload = Payload{
+                    .file = FileInformation{ .file = file, .file_length = file_length },
+                },
                 .etag = etag,
                 .endpoint = endpoint,
                 .arena = arena,
@@ -65,11 +66,26 @@ pub const ReceivingState = struct {
     start_timestamp: i128,
 };
 
+const FileInformation = struct {
+    file: fs.File,
+    file_length: usize,
+};
+
+const DataInformation = struct {
+    data: []const u8,
+    position: usize,
+    allocator: *mem.Allocator,
+};
+
+const Payload = union(enum) {
+    file: FileInformation,
+    data: DataInformation,
+};
+
 pub const SendingState = struct {
     const Self = @This();
 
-    file: fs.File,
-    file_length: usize,
+    payload: Payload,
     socket: Socket,
     endpoint: EndPoint,
     etag: u32,
@@ -87,13 +103,29 @@ pub const SendingState = struct {
         socket_set: *SocketSet,
         chunk_size: usize,
     ) !Connection {
-        var buffer = try allocator.alloc(u8, chunk_size);
+        const send_buffer = send_buffer: {
+            switch (self.payload) {
+                .file => |file_information| {
+                    var file_buffer = try allocator.alloc(u8, chunk_size);
+                    const read_bytes = try file_information.file.read(file_buffer);
+                    break :send_buffer file_buffer[0..read_bytes];
+                },
+                .data => |data_information| {
+                    const position = data_information.position;
+                    const data = data_information.data;
+                    const data_buffer = if (position + chunk_size < data.len)
+                        data[position..(position + chunk_size)]
+                    else
+                        data[position..];
 
-        const read_bytes = try self.file.read(buffer);
-        const send_buffer = buffer[0..read_bytes];
+                    break :send_buffer data_buffer;
+                },
+            }
+        };
+
         var sent_bytes = try self.socket.send(send_buffer);
 
-        if (read_bytes < buffer.len) {
+        if (send_buffer.len < chunk_size) {
             const end_timestamp = std.time.nanoTimestamp();
             const time_difference = end_timestamp - self.start_timestamp;
             const timestamp_in_ms = @intToFloat(f64, time_difference) / 1_000_000.0;
@@ -105,18 +137,18 @@ pub const SendingState = struct {
 
             return Connection.idle;
         } else {
-            self.position += read_bytes;
-
             return Connection{ .sending = self.* };
         }
     }
 
     pub fn deinit(self: *Self, socket_set: *SocketSet) void {
-        // self.request.deinit();
         self.arena.deinit();
         self.longlived_allocator.destroy(self.arena);
         self.socket.close();
-        self.file.close();
+        switch (self.payload) {
+            .file => |file_information| file_information.file.close(),
+            .data => |data_information| data_information.allocator.free(data_information.data),
+        }
         socket_set.remove(self.socket);
     }
 };
@@ -632,7 +664,7 @@ fn handleReceiving(
                 }
             }
 
-            return Connection.sending(
+            return Connection.sendingFile(
                 file,
                 expected_file_size,
                 socket,

@@ -305,7 +305,7 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
             var it = mem.split(argument, "=");
             _ = it.next();
             if (it.next()) |memory_debug| {
-                options.memory_debug = if (mem.eql(u8, memory_debug, "true")) true else false;
+                options.memory_debug = mem.eql(u8, memory_debug, "true");
             }
         } else if (mem.startsWith(u8, argument, "uid=")) {
             var it = mem.split(argument, "=");

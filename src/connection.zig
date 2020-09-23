@@ -254,17 +254,30 @@ fn handleSending(
                 ),
                 .data => "",
             };
-
             _ = socket.send(etag_header) catch unreachable;
-            const content_type_header = switch (sending.payload) {
-                .file => |file_information| try fmt.bufPrint(
-                    header_buffer,
-                    "Content-type: {}\n",
-                    .{determineContentType(file_information.static_path)},
-                ),
+
+            const content_type = switch (sending.payload) {
+                .file => |file_information| determineContentType(file_information.static_path),
                 .data => |data_information| data_information.content_type,
             };
+            const content_type_header = try fmt.bufPrint(
+                header_buffer,
+                "Content-type: {}\n",
+                .{content_type},
+            );
             _ = socket.send(content_type_header) catch unreachable;
+
+            const content_length = switch (sending.payload) {
+                .file => |file_information| file_information.file_length,
+                .data => |data_information| data_information.data.len,
+            };
+            const content_length_header = try fmt.bufPrint(
+                header_buffer,
+                "Content-length: {}\n",
+                .{content_length},
+            );
+            _ = socket.send(content_length_header) catch unreachable;
+
             _ = socket.send("\n") catch unreachable;
 
             sending.headers_sent = true;

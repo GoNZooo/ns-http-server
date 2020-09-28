@@ -15,6 +15,8 @@ const Socket = network.Socket;
 const EndPoint = network.EndPoint;
 const SocketSet = network.SocketSet;
 
+const Etag = u64;
+
 pub const Connection = union(enum) {
     idle: void,
     receiving: ReceivingState,
@@ -25,7 +27,7 @@ pub const Connection = union(enum) {
         file_length: usize,
         socket: Socket,
         endpoint: EndPoint,
-        etag: u32,
+        etag: Etag,
         arena: *heap.ArenaAllocator,
         static_path: []const u8,
         request: parsing.Request,
@@ -103,7 +105,7 @@ pub const ReceivingState = struct {
 const FileInformation = struct {
     file: fs.File,
     file_length: usize,
-    etag: u32,
+    etag: Etag,
     static_path: []const u8,
 };
 
@@ -705,7 +707,7 @@ fn handleReceiving(
             }
             if (if_none_match_request_header) |h| {
                 const etag_value = fmt.parseInt(
-                    u32,
+                    Etag,
                     h.if_none_match,
                     10,
                 ) catch |e| etag_value: {

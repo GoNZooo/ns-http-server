@@ -39,8 +39,6 @@ const Options = struct {
 };
 
 pub fn Server(comptime handle_connection: anytype) type {
-    const HandleError = @TypeOf(handle_connection).ReturnType.ErrorSet;
-
     return struct {
         const Self = @This();
 
@@ -134,6 +132,11 @@ pub fn Server(comptime handle_connection: anytype) type {
                 if (self.socket_set.isReadyRead(self.socket)) {
                     const client_socket = self.socket.accept() catch |e| {
                         switch (e) {
+                            error.SocketNotListening => {
+                                log.err("Socket not listening", .{});
+
+                                continue;
+                            },
                             error.ConnectionAborted => {
                                 log.err("Client aborted connection", .{});
 
@@ -248,6 +251,8 @@ pub fn Server(comptime handle_connection: anytype) type {
     };
 }
 
+const GeneralPurposeAllocator = heap.GeneralPurposeAllocator(.{});
+
 pub fn main() anyerror!void {
     try network.init();
     defer network.deinit();
@@ -255,10 +260,12 @@ pub fn main() anyerror!void {
     const options = try getCommandLineOptions(heap.page_allocator);
 
     var logging_allocator = heap.loggingAllocator(heap.page_allocator, io.getStdOut().writer());
+    var general_purpose_allocator = GeneralPurposeAllocator{};
+
     const long_lived_allocator = if (options.memory_debug)
         &logging_allocator.allocator
     else
-        heap.page_allocator;
+        &general_purpose_allocator.allocator;
 
     var memory_buffer: [max_stack_file_read_size]u8 = undefined;
     var fixed_buffer_allocator = heap.FixedBufferAllocator.init(&memory_buffer);

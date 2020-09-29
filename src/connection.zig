@@ -311,6 +311,7 @@ fn handleSending(
                 error.SystemResources,
                 error.InputOutput,
                 error.Unexpected,
+                error.NotOpenForReading,
                 => {
                     debug.panic("odd error: {}\n", .{e});
                 },

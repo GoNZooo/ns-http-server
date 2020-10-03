@@ -1,3 +1,4 @@
+const Pkg = @import("std").build.Pkg;
 const Builder = @import("std").build.Builder;
 const CrossTarget = @import("std").zig.CrossTarget;
 const Abi = @import("std").Target.Abi;
@@ -14,13 +15,13 @@ pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("http-server", "src/main.zig");
-    exe.addPackagePath("network", "dependencies/zig-network/network.zig");
+    exe.addPackage(zig_network);
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
 
     const tests = b.addTest("src/blocklist.zig");
-    tests.addPackagePath("network", "dependencies/zig-network/network.zig");
+    tests.addPackage(zig_network);
     tests.setTarget(target);
     tests.setBuildMode(mode);
 
@@ -33,3 +34,5 @@ pub fn build(b: *Builder) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&tests.step);
 }
+
+const zig_network = Pkg{ .name = "zig-network", .path = "dependencies/zig-network/network.zig" };

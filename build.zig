@@ -35,4 +35,4 @@ pub fn build(b: *Builder) void {
     test_step.dependOn(&tests.step);
 }
 
-const zig_network = Pkg{ .name = "zig-network", .path = "dependencies/zig-network/network.zig" };
+const zig_network = Pkg{ .name = "network", .path = "dependencies/zig-network/network.zig" };

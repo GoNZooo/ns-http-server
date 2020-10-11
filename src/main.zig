@@ -36,6 +36,7 @@ const Options = struct {
     uid: ?u32 = null,
     blocklist: ?BlockList = null,
     memory_debug: bool = false,
+    dynamic_cache_size: u64 = 0,
 };
 
 pub fn Server(comptime handle_connection: anytype) type {
@@ -297,7 +298,7 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
 
     const process_name = arguments[0];
     const usage = "Usage: {} <port> [chunk_size=256] [static_root=./static] [blocklist=null]" ++
-        " [uid=null] [memory-debug=false]";
+        " [uid=null] [memory-debug=false] [dynamic-cache-size=0]";
     if (arguments.len < 2) {
         log.err(usage, .{process_name});
 
@@ -313,6 +314,16 @@ fn getCommandLineOptions(allocator: *mem.Allocator) !Options {
             _ = it.next();
             if (it.next()) |memory_debug| {
                 options.memory_debug = mem.eql(u8, memory_debug, "true");
+            }
+        } else if (mem.startsWith(u8, argument, "dynamic-cache-size=")) {
+            var it = mem.split(argument, "=");
+            _ = it.next();
+            if (it.next()) |dynamic_cache_size_string| {
+                options.dynamic_cache_size = try fmt.parseUnsigned(
+                    u64,
+                    dynamic_cache_size_string,
+                    10,
+                );
             }
         } else if (mem.startsWith(u8, argument, "uid=")) {
             var it = mem.split(argument, "=");

@@ -445,9 +445,15 @@ pub const Method = enum(u8) {
 
 pub const Version = enum(u8) {
     http11,
+    http10,
 
     pub fn fromSlice(slice: []const u8) !Version {
-        if (mem.eql(u8, slice[0..8], "HTTP/1.1")) return Version.http11;
+        if (mem.startsWith(u8, slice, "HTTP/1.1"))
+            return Version.http11
+        else if (mem.startsWith(u8, slice, "HTTP/1.0"))
+            return Version.http10;
+
+        debug.print("version slice={}\n", .{slice});
 
         return error.UnableToParseVersion;
     }

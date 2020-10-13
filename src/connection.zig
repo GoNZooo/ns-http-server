@@ -809,6 +809,7 @@ const not_found_response =
 const not_modified_response =
     \\HTTP/1.1 304 Not modified
     \\
+    \\
 ;
 
 const high_load_response =

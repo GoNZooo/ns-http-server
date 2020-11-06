@@ -433,7 +433,7 @@ fn handleReceiving(
             }
         };
 
-        const resource_slice = request.request_line.resource[1..];
+        const resource_slice = removeLeadingSlashes(request.request_line.resource[1..]);
         const resource = if (mem.eql(u8, resource_slice, ""))
             "index.html"
         else
@@ -878,4 +878,8 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
     }
 
     return false;
+}
+
+fn removeLeadingSlashes(string: []const u8) []const u8 {
+    return mem.trimLeft(u8, string, "/");
 }

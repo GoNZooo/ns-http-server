@@ -125,7 +125,10 @@ pub fn Server(comptime handle_connection: anytype) type {
                         }
                     } else {
                         switch (e) {
-                            error.SystemResources, error.Unexpected => unreachable,
+                            error.SystemResources,
+                            error.Unexpected,
+                            error.NetworkSubsystemFailed,
+                            => unreachable,
                         }
                     }
                 };
@@ -138,12 +141,15 @@ pub fn Server(comptime handle_connection: anytype) type {
 
                                 continue;
                             },
-                            error.ConnectionAborted => {
+                            error.ConnectionResetByPeer, error.ConnectionAborted => {
                                 log.err("Client aborted connection", .{});
 
                                 continue;
                             },
 
+                            error.FileDescriptorNotASocket,
+                            error.NetworkSubsystemFailed,
+                            error.OperationNotSupported,
                             error.ProcessFdQuotaExceeded,
                             error.SystemFdQuotaExceeded,
                             error.SystemResources,

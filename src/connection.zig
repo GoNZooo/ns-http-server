@@ -303,6 +303,7 @@ fn handleSending(
                         .{sending.endpoint},
                     );
                 },
+                error.FileDescriptorNotASocket,
                 error.IsDir,
                 error.AccessDenied,
                 error.WouldBlock,

@@ -546,6 +546,13 @@ fn handleReceiving(
                 request.request_line.resource,
             );
 
+            // @TODO: Should probably redirect here to force trailing slash, so relative links work
+            // properly?
+            // `http://.../sub-directory` won't handle a relative link to `style.css` such that it
+            // loads `http://.../sub-directory/style.css` for the implicitly loaded `index.html`.
+            // This also needs to interact with any sanitation that the parser does for the resource
+            // slice, which likely means it needs to use `trimLeft` instead of `trim`.
+
             const static_path_components = if (resource_is_directory)
                 &[_][]const u8{ static_root, resource, "/index.html" }
             else

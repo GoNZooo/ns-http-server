@@ -66,7 +66,7 @@ pub const RequestLine = struct {
         const maybe_resource_slice = it.next();
         if (maybe_resource_slice == null) return error.NoResourceGiven;
         const resource_slice = maybe_resource_slice.?;
-        const resource = try allocator.dupe(u8, resource_slice);
+        const resource = mem.trim(u8, try allocator.dupe(u8, resource_slice), "/");
 
         const maybe_version_slice = it.next();
         if (maybe_version_slice == null) return error.NoVersionGiven;

@@ -434,11 +434,10 @@ fn handleReceiving(
             }
         };
 
-        const resource_slice = removeLeadingSlashes(request.request_line.resource[1..]);
-        const resource = if (mem.eql(u8, resource_slice, ""))
+        const resource = if (mem.eql(u8, request.request_line.resource, ""))
             "index.html"
         else
-            resource_slice;
+            request.request_line.resource;
 
         if (request.request_line.method == .get and mem.eql(u8, resource, "diagnostics")) {
             const content_format =

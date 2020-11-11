@@ -855,6 +855,17 @@ const internal_error_response =
     \\Internal Server Error
 ;
 
+fn temporaryRedirect(allocator: *mem.Allocator, location: []const u8) ![]const u8 {
+    const response_format =
+        \\HTTP/1.1 307 Temporary Redirect
+        \\Location: {}
+        \\
+        \\
+    ;
+
+    return try fmt.allocPrint(allocator, response_format, .{location});
+}
+
 fn determineContentType(path: []const u8) []const u8 {
     return if (endsWithAny(
         u8,

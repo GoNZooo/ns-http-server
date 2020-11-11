@@ -536,10 +536,25 @@ fn handleReceiving(
 
             return Connection.idle;
         } else if (request.request_line.method == .get) {
+            // I think it's reasonable to error out completely here, given that the static directory
+            // is pretty central to the whole thing. If it can't be opened it's closing time.
+            var static_directory = try fs.cwd().openDir(static_root, .{});
+            defer static_directory.close();
+
+            const resource_is_directory = isDirectory(
+                static_directory,
+                request.request_line.resource,
+            );
+
+            const static_path_components = if (resource_is_directory)
+                &[_][]const u8{ static_root, resource, "/index.html" }
+            else
+                &[_][]const u8{ static_root, resource };
+
             const static_path = mem.concat(
                 request_arena_allocator,
                 u8,
-                &[_][]const u8{ static_root, resource },
+                static_path_components,
             ) catch |concat_error| {
                 switch (concat_error) {
                     error.OutOfMemory => {
@@ -868,4 +883,18 @@ fn endsWithAny(comptime T: type, slice: []const T, comptime suffixes: []const []
 
 fn removeLeadingSlashes(string: []const u8) []const u8 {
     return mem.trimLeft(u8, string, "/");
+}
+
+fn isDirectory(directory: fs.Dir, path: []const u8) bool {
+    var resource_as_directory: ?fs.Dir = directory.openDir(
+        path,
+        .{},
+    ) catch |err| null;
+    if (resource_as_directory) |*d| {
+        d.close();
+
+        return true;
+    } else {
+        return false;
+    }
 }

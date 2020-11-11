@@ -536,20 +536,6 @@ fn handleReceiving(
             longlived_allocator.destroy(arena);
 
             return Connection.idle;
-        } else if (request.request_line.method == .get and mem.eql(u8, resource, "zig-grammar")) {
-            const data = try longlived_allocator.dupe(u8, example_data.grammar);
-            const content_type = "text/plain";
-
-            return Connection.sendingData(
-                data,
-                content_type,
-                longlived_allocator,
-                socket,
-                remote_endpoint,
-                arena,
-                request,
-                longlived_allocator,
-            );
         } else if (request.request_line.method == .get) {
             const static_path = mem.concat(
                 request_arena_allocator,
